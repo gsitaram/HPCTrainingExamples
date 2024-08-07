@@ -24,7 +24,7 @@ double boundarycondition_time=0.0, ghostcell_time=0.0;
 // that use information from the halo.
 // this version serves as an initial step towards having
 // an overlap of GPU kernel compute with CPU MPI exchange
-// (see Ver2 in HIP version of Ghost Exchange code)
+// (see Ver8 in HIP version of Ghost Exchange code)
 
 int main(int argc, char *argv[])
 {

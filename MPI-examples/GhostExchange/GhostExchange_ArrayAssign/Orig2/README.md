@@ -1,6 +1,10 @@
-# Ghost Exchange: Original Implementation
+# Ghost Exchange: Orig2 - CPU Implementation that decouples compute on inner cells and halo cells
 
-This example shows a CPU-only implementation, and how to use Omnitrace to trace it.
+This example shows a CPU-only implementation based on Orig that computes the solution 
+first on the cells that do not need to use information from the halo cells, then
+performs a halo exchange, and finally advances the cells that use information from the 
+halo. This version serves as an initial step towards having an overlap of GPU kernel 
+compute with CPU MPI exchange.
 
 ## Environment: Frontier
 

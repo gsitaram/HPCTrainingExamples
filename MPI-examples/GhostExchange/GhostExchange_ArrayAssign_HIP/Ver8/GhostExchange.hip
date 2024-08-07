@@ -4,7 +4,6 @@
 #include <time.h>
 #include <mpi.h>
 #include <hip/hip_runtime.h>
-#include <roctx.h>
 
 #include "malloc2D.h"
 #include "timer.h"
@@ -34,6 +33,51 @@ __global__ void blur (double **x, double **xnew, int jsize, int isize)
     int tidx = threadIdx.x + blockIdx.x * blockDim.x;
     int tidy = threadIdx.y + blockIdx.y * blockDim.y;
     if (tidy < jsize && tidx < isize) {
+        xnew[tidy][tidx] = ( x[tidy][tidx] + x[tidy][tidx-1] + x[tidy][tidx+1] + x[tidy-1][tidx] + x[tidy+1][tidx] )/5.0;
+    }
+}
+
+__global__ void blur_inner (double **x, double **xnew, int jsize, int isize, int nhalo)
+{
+    int tidx = threadIdx.x + blockIdx.x * blockDim.x + nhalo;
+    int tidy = threadIdx.y + blockIdx.y * blockDim.y + nhalo;
+    if (tidy < jsize - nhalo && tidx < isize - nhalo) {
+        xnew[tidy][tidx] = ( x[tidy][tidx] + x[tidy][tidx-1] + x[tidy][tidx+1] + x[tidy-1][tidx] + x[tidy+1][tidx] )/5.0;
+    }
+}
+
+__global__ void blur_outer_left (double **x, double **xnew, int jsize, int isize, int nhalo)
+{
+    int tidx = threadIdx.x + blockIdx.x * blockDim.x;
+    int tidy = threadIdx.y + blockIdx.y * blockDim.y;
+    if (tidy < jsize && tidx < nhalo) {
+        xnew[tidy][tidx] = ( x[tidy][tidx] + x[tidy][tidx-1] + x[tidy][tidx+1] + x[tidy-1][tidx] + x[tidy+1][tidx] )/5.0;
+    }
+}
+
+__global__ void blur_outer_right (double **x, double **xnew, int jsize, int isize, int nhalo)
+{
+    int tidx = threadIdx.x + blockIdx.x * blockDim.x + isize - nhalo;
+    int tidy = threadIdx.y + blockIdx.y * blockDim.y;
+    if (tidy < jsize && tidx < isize) {
+        xnew[tidy][tidx] = ( x[tidy][tidx] + x[tidy][tidx-1] + x[tidy][tidx+1] + x[tidy-1][tidx] + x[tidy+1][tidx] )/5.0;
+    }
+}
+
+__global__ void blur_outer_top (double **x, double **xnew, int jsize, int isize, int nhalo)
+{
+    int tidx = threadIdx.x + blockIdx.x * blockDim.x + nhalo;
+    int tidy = threadIdx.y + blockIdx.y * blockDim.y + jsize - nhalo;
+    if (tidy < jsize && tidx < isize - nhalo) {
+        xnew[tidy][tidx] = ( x[tidy][tidx] + x[tidy][tidx-1] + x[tidy][tidx+1] + x[tidy-1][tidx] + x[tidy+1][tidx] )/5.0;
+    }
+}
+
+__global__ void blur_outer_bottom (double **x, double **xnew, int jsize, int isize, int nhalo)
+{
+    int tidx = threadIdx.x + blockIdx.x * blockDim.x + nhalo;
+    int tidy = threadIdx.y + blockIdx.y * blockDim.y;
+    if (tidy < nhalo && tidx < isize- nhalo) {
         xnew[tidy][tidx] = ( x[tidy][tidx] + x[tidy][tidx-1] + x[tidy][tidx+1] + x[tidy-1][tidx] + x[tidy+1][tidx] )/5.0;
     }
 }
@@ -135,11 +179,11 @@ int main(int argc, char *argv[])
    if (rank == 0) printf("Parallel run with no threads\n");
    hipSetDevice(0);
 
-   int imax = 200, jmax = 200;
-   int nprocx = 2, nprocy = 2;
-   int nhalo = 2, corners = 1;
-   int do_timing = 1;
-   int maxIter = 1;
+   int imax = 2000, jmax = 2000;
+   int nprocx = 0, nprocy = 0;
+   int nhalo = 2, corners = 0;
+   int do_timing = 0;
+   int maxIter = 1000;
 
    parse_input_args(argc, argv, jmax, imax, nprocy, nprocx, nhalo, corners, maxIter, do_timing);
  
@@ -197,40 +241,46 @@ int main(int argc, char *argv[])
    hipDeviceSynchronize();
 
    boundarycondition_update(x, nhalo, jsize, isize, nleft, nrght, nbot, ntop);
-   ghostcell_update(x, nhalo, corners, jsize, isize, nleft, nrght, nbot, ntop, do_timing);
 
-   if (rank == 0) printf("Initial State \n");
-   Cartesian_print(x, jmax, imax, nhalo, nprocy, nprocx);
-
-   roctxMark("Starting main iteration loop");
+//   if (rank == 0) printf("Initial State \n");
+//   Cartesian_print(x, jmax, imax, nhalo, nprocy, nprocx);
 
    for (int iter = 0; iter < maxIter; iter++){
-      roctxRangePush("Stencil");
       cpu_timer_start(&tstart_stencil);
 
-      blur <<< grid, block >>> (x, xnew, jsize, isize);
+      // note: we assume that the halo size is greater than or equal
+      // to the the operator's stencil reach (which for the blur is 1)
+      blur_inner <<< grid, block >>> (x, xnew, jsize, isize, nhalo);
+      ghostcell_update(x, nhalo, corners, jsize, isize, nleft, nrght, nbot, ntop, do_timing);
+      MPI_Barrier(MPI_COMM_WORLD);
       hipDeviceSynchronize();
-      roctxRangePop(); //Stencil
+
+      blur_outer_left <<< grid, block >>> (x, xnew, jsize, isize, nhalo);
+      blur_outer_right <<< grid, block >>> (x, xnew, jsize, isize, nhalo);
+      blur_outer_top <<< grid, block >>> (x, xnew, jsize, isize, nhalo);
+      blur_outer_bottom <<< grid, block >>> (x, xnew, jsize, isize, nhalo);
+
+      boundarycondition_update(xnew, nhalo, jsize, isize, nleft, nrght, nbot, ntop);
+
+      // halo update on soln
+      // NOTE: this is just for visualziation
+      // we do not care in general what the solution is in the halo
+      // as long as it is correct when we need it to compute the next
+      // value of the solution
+      ghostcell_update(xnew, nhalo, corners, jsize, isize, nleft, nrght, nbot, ntop, do_timing);
 
       SWAP_PTR(xnew, x, xtmp);
 
       stencil_time += cpu_timer_stop(tstart_stencil);
 
-      roctxRangePush("BoundaryUpdate");
-      boundarycondition_update(x, nhalo, jsize, isize, nleft, nrght, nbot, ntop);
-      roctxRangePop(); //BoundaryUpdate
-      roctxRangePush("GhostCellUpdate");
-      ghostcell_update(x, nhalo, corners, jsize, isize, nleft, nrght, nbot, ntop, do_timing);
-      roctxRangePop(); //GhostCellUpdate
-
-      if (iter%1 == 0) {
+      if (iter%10 == 0) {
          if (rank == 0) printf("Iter %d\n",iter);
-         Cartesian_print(x, jmax, imax, nhalo, nprocy, nprocx);
+         // Cartesian_print(x, jmax, imax, nhalo, nprocy, nprocx);
       }
    }
-   roctxMark("Stopping main iteration loop");
-
    total_time = cpu_timer_stop(tstart_total);
+
+   Cartesian_print(x, jmax, imax, nhalo, nprocy, nprocx);
 
    if (rank == 0){
       printf("GhostExchange_ArrayAssign Timing is stencil %f boundary condition %f ghost cell %lf total %f\n",
@@ -293,10 +343,8 @@ void ghostcell_update(double **x, int nhalo, int corners, int jsize, int isize, 
    struct timespec tstart_ghostcell;
    cpu_timer_start(&tstart_ghostcell);
 
-   roctxRangePush("MPIRequest");
    MPI_Request request[4*nhalo];
    MPI_Status status[4*nhalo];
-   roctxRangePop(); //MPIRequest
 
    int jlow=0, jhgh=jsize;
    if (corners) {
@@ -306,33 +354,29 @@ void ghostcell_update(double **x, int nhalo, int corners, int jsize, int isize, 
    int jnum = jhgh-jlow;
    int bufcount = jnum*nhalo;
 
-   roctxRangePush("BufAlloc");
    double xbuf_left_send[bufcount];
    double xbuf_rght_send[bufcount];
    double xbuf_rght_recv[bufcount];
    double xbuf_left_recv[bufcount];
-   roctxRangePop(); //BufAlloc
-
-   roctxRangePush("LoadLeftRight");
-   dim3 gridGhst((nhalo+3)/4, (jnum+63)/64, 1);
-   dim3 blockGhst(4, 64, 1);
+   int offset = 0;
 
    if (nleft != MPI_PROC_NULL){
-
-      ghost_left_send <<< gridGhst, blockGhst >>> (xbuf_left_send, x, jlow, jhgh, nhalo, bufcount);
-      hipDeviceSynchronize();
-
+      for (int j = jlow; j < jhgh; j++){
+         for (int ll = 0; ll < nhalo; ll++){
+            offset = (j - jlow) * nhalo + ll;
+            xbuf_left_send[offset] = x[j][ll];
+         }
+      }
    }
-
    if (nrght != MPI_PROC_NULL){
-
-      ghost_rght_send <<< gridGhst, blockGhst >>> (xbuf_rght_send, x, jlow, jhgh, isize, nhalo, bufcount);
-      hipDeviceSynchronize();
-
+      for (int j = jlow; j < jhgh; j++){
+         for (int ll = 0; ll < nhalo; ll++){
+            offset = (j - jlow) * nhalo + ll;
+            xbuf_rght_send[offset] = x[j][isize-nhalo+ll];
+         }
+      }
    }
-   roctxRangePop(); //LoadLeftRight
 
-   roctxRangePush("MPILeftRightExchange");
    MPI_Irecv(&xbuf_rght_recv, bufcount, MPI_DOUBLE, nrght, 1001,
              MPI_COMM_WORLD, &request[0]);
    MPI_Isend(&xbuf_left_send, bufcount, MPI_DOUBLE, nleft, 1001,
@@ -343,25 +387,24 @@ void ghostcell_update(double **x, int nhalo, int corners, int jsize, int isize, 
    MPI_Isend(&xbuf_rght_send, bufcount, MPI_DOUBLE, nrght, 1002,
              MPI_COMM_WORLD, &request[3]);
    MPI_Waitall(4, request, status);
-   roctxRangePop(); //MPILeftRightExchange
 
-   roctxRangePush("UnpackLeftRight");
    if (nrght != MPI_PROC_NULL){
-
-      ghost_rght_recv <<< gridGhst, blockGhst >>> (xbuf_rght_recv, x, jlow, jhgh, isize, nhalo, bufcount);
-      hipDeviceSynchronize();
-
+      for (int j = jlow; j < jhgh; j++){
+         for (int ll = 0; ll < nhalo; ll++){
+            offset = (j - jlow) * nhalo + ll;
+            x[j][isize+ll] = xbuf_rght_recv[offset];
+         }
+      }
    }
-
    if (nleft != MPI_PROC_NULL){
-
-      ghost_left_recv <<< gridGhst, blockGhst >>>  (xbuf_left_recv, x, jlow, jhgh, nhalo, bufcount);
-      hipDeviceSynchronize();
-
+      for (int j = jlow; j < jhgh; j++){
+         for (int ll = 0; ll < nhalo; ll++){
+            offset = (j - jlow) * nhalo + ll;
+            x[j][-nhalo+ll] = xbuf_left_recv[offset];
+         }
+      }
    }
-   roctxRangePop(); //UnpackLeftRight
 
-   roctxRangePush("MPIUpDownExchange");
    if (corners) {
       bufcount = nhalo*(isize+2*nhalo);
       MPI_Irecv(&x[jsize][-nhalo],   bufcount, MPI_DOUBLE, ntop, 1001, MPI_COMM_WORLD, &request[0]);
@@ -380,7 +423,6 @@ void ghostcell_update(double **x, int nhalo, int corners, int jsize, int isize, 
          }
       MPI_Waitall(4*nhalo, request, status);
    }
-   roctxRangePop(); //MPIUpDownExchange
 
    //if (do_timing) MPI_Barrier(MPI_COMM_WORLD);
 

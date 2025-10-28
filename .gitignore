@@ -63,3 +63,6 @@ MLExamples/PyTorch_Profiling/data/
 
 # Generated profiling traces
 MLExamples/PyTorch_Profiling/rocprofv3/single_process/
+MLExamples/TinyTransformer/*/counters/
+MLExamples/TinyTransformer/*/traces/
+MLExamples/TinyTransformer/*/github_issue_test/

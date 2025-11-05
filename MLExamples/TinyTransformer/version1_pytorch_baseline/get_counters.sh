@@ -1,67 +1,40 @@
 #!/bin/bash
+# Script to profile inference_benchmark with rocprofv3 kernel trace and hardware counters
+# This captures detailed GPU hardware metrics for performance analysis
 #
-# Get hardware performance counters using rocprofv3
-#
+# Supports both ROCm 6.x (CSV output) and ROCm 7.x (SQLite database output)
 
 set -e
 
-echo "=========================================="
-echo "rocprofv3 Hardware Counters - Version 1"
-echo "=========================================="
-echo ""
+# Detect ROCm version
+ROCM_VERSION=""
+ROCM_MAJOR=""
 
-OUTPUT_DIR="./counters/counter_$(date +%Y%m%d_%H%M%S)"
-mkdir -p "$OUTPUT_DIR"
-
-echo "Output directory: $OUTPUT_DIR"
-echo ""
-
-# Run with kernel trace to collect counter data
-# rocprofv3 automatically collects available counters with --kernel-trace
-echo "Running: rocprofv3 --kernel-trace -- python tiny_llama_v1.py --batch-size 8 --seq-len 128 --num-steps 10"
-echo ""
-
-cd "$OUTPUT_DIR"
-rocprofv3 --kernel-trace -- python ../../tiny_llama_v1.py --batch-size 8 --seq-len 128 --num-steps 10
-ROCPROF_EXIT=$?
-
-echo ""
-if [ $ROCPROF_EXIT -eq 0 ]; then
-    echo "[SUCCESS] Counter collection completed"
-else
-    echo "[FAILED] Counter collection failed with exit code $ROCPROF_EXIT"
-    exit 1
-fi
-echo ""
-
-echo "Generated files:"
-find . -type f -ls
-echo ""
-
-# Find the kernel trace CSV file
-KERNEL_TRACE=$(find . -name "*kernel_trace.csv" -type f | head -1)
-
-if [ -n "$KERNEL_TRACE" ]; then
-    echo "Found kernel trace: $KERNEL_TRACE"
-    echo ""
-    echo "Analyzing kernel trace data..."
-    echo ""
-
-    cd ../..
-    python analyze_kernel_trace.py "$OUTPUT_DIR/$KERNEL_TRACE"
-
-    echo ""
-else
-    echo "[WARNING] No kernel_trace.csv file found"
-    echo ""
-    echo "Looking for other counter data:"
-    find . \( -name "*.csv" -o -name "*.json" -o -name "*.txt" \) -exec echo "Found: {}" \;
-    echo ""
+# Method 1: Check rocminfo
+if command -v rocminfo &> /dev/null; then
+    ROCM_VERSION=$(rocminfo | grep -i "ROCm Version" | head -1 | awk '{print $3}')
 fi
 
-echo "Hardware counters provide detailed GPU performance metrics:"
-echo "  - Memory bandwidth utilization"
-echo "  - Cache hit rates"
-echo "  - Compute unit occupancy"
-echo "  - VGPR/SGPR usage"
-echo ""
+# Method 2: Check ROCM_PATH
+if [ -z "$ROCM_VERSION" ] && [ -n "$ROCM_PATH" ]; then
+    if [ -f "$ROCM_PATH/.info/version" ]; then
+        ROCM_VERSION=$(cat "$ROCM_PATH/.info/version")
+    fi
+fi
+
+# Method 3: Check hipcc version (more reliable for module-loaded ROCm)
+if [ -z "$ROCM_VERSION" ] && command -v hipcc &> /dev/null; then
+    HIP_VERSION=$(hipcc --version 2>/dev/null | grep -i "HIP version" | head -1 | awk '{print $3}')
+    if [ -n "$HIP_VERSION" ]; then
+        ROCM_VERSION="$HIP_VERSION"
+    fi
+fi
+
+# Extract major version
+if [ -n "$ROCM_VERSION" ]; then
+    ROCM_MAJOR=$(echo "$ROCM_VERSION" | cut -d. -f1)
+    echo "Detected ROCm version: $ROCM_VERSION"
+else
+    echo "Warning: Could not detect ROCm version, assuming ROCm 7.x"
+    ROCM_MAJOR="7"
+fi

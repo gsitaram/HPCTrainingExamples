@@ -1,6 +1,7 @@
 #!/bin/bash
 #
 # Get system-level profiling using rocprof-sys
+# Compatible with ROCm 6.x and 7.x
 #
 
 set -e

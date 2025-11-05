@@ -1,6 +1,7 @@
 #!/bin/bash
 #
 # Get hotspots analysis using rocprofv3
+# Compatible with ROCm 6.x and 7.x
 #
 
 set -e

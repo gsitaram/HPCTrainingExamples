@@ -1,6 +1,7 @@
 #!/bin/bash
 #
 # Get system-level profiling using rocprof-sys
+# Compatible with ROCm 6.x and 7.x
 #
 # NOTE: rocprof-sys may produce memory map dumps in some configurations
 # This is a known issue tracked in GitHub. If profiling fails or produces

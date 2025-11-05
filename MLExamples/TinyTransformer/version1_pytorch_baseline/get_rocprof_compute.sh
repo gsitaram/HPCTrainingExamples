@@ -1,6 +1,7 @@
 #!/bin/bash
 #
 # Get detailed GPU metrics using rocprof-compute
+# Compatible with ROCm 6.x and 7.x
 #
 
 set -e

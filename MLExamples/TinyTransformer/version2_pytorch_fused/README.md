@@ -1,171 +1,129 @@
 # ML Example: TinyTransformer Fused with ROCm Profiling
 
-README.md from `HPCTrainingExamples/MLExamples/TinyTransformer/version2_pytorch_fused` from the Training Examples repository.
+In this version we keep the baseline model structure, but introduce a first round of fusion through framework-level mechanisms. This directory is useful as an intermediate case between the plain PyTorch baseline and the later Triton-based versions. It shows what changes in the traces and hotspot lists when some operations are fused, even if the end-to-end speedup is still modest.
 
-In this example we provide a fused PyTorch implementation of Tiny LLaMA with kernel fusion optimizations for profiling transformer workloads on AMD GPUs. This version builds on the baseline (version1) with QKV fusion, Flash Attention, and SwiGLU fusion to demonstrate performance optimization techniques. Several profiling scripts are provided to capture different aspects of GPU performance.
+## Changes relative to version 1
 
-## Features of the profiling scripts
+This version is written to expose the following optimizations when supported by the software stack:
 
-The version2_pytorch_fused example contains several profiling scripts that capture different aspects of GPU performance:
+- fused Q, K, and V projection path
+- fused or memory-efficient attention path
+- fused SwiGLU path
+- `torch.compile`-driven graph and kernel fusion
 
-- **get_trace.sh**: Runtime trace collection using rocprofv3. Captures HIP/HSA API calls, kernel execution timeline, memory operations (H2D, D2H, D2D transfers), and synchronization events. Output is a Perfetto trace file for timeline visualization.
-- **get_counters.sh**: Kernel trace collection using rocprofv3. Captures kernel execution statistics including timing and call counts. Useful for identifying hotspot kernels and their execution patterns.
-- **get_rocprof_compute.sh**: Detailed GPU hardware metrics using rocprof-compute. Provides comprehensive performance analysis including compute utilization, memory bandwidth, and hardware counter data.
-- **get_rocprof_sys.sh**: System-level profiling using rocprof-sys. Captures call stack sampling and system-level performance data for end-to-end analysis.
-- **get_hotspots.sh**: GPU hotspot analysis using rocprofv3 stats mode. Identifies kernels with highest time consumption.
-
-## Key Optimizations
-
-This version implements the following optimizations over the baseline:
-
-- **QKV Fusion**: Combines Q, K, V projections into single GEMM (3 kernels → 1)
-- **Flash Attention**: Memory-efficient attention via scaled_dot_product_attention (O(S²) → O(S) memory)
-- **SwiGLU Fusion**: Combines gate and up projections (2 kernels → 1)
-- **torch.compile**: Automatic kernel fusion and optimization
+The repository comparison in [`../VERSION_COMPARISON.md`](../VERSION_COMPARISON.md) shows that version 2 changes the kernel mix more than the end-to-end timing. That is precisely what makes it useful as a teaching step.
 
 ## Overview of the model
 
-The model is controlled with the following arguments:
+The main command-line arguments are:
 
-- `--batch-size <N>`: batch size for training (default: 8)
-- `--seq-len <N>`: sequence length (default: 256)
-- `--num-steps <N>`: number of training steps (default: 50)
-- `--hidden-dim <N>`: hidden dimension (default: 512)
-- `--num-layers <N>`: number of transformer layers (default: 8)
-- `--num-heads <N>`: number of attention heads (default: 8)
-- `--learning-rate <float>`: learning rate (default: 3e-4)
+- `--batch-size <N>`: batch size for training
+- `--seq-len <N>`: sequence length
+- `--num-steps <N>`: number of training steps
+- `--hidden-dim <N>`: hidden dimension
+- `--num-layers <N>`: number of transformer layers
+- `--num-heads <N>`: number of attention heads
+- `--learning-rate <float>`: learning rate
 - `--use-amp`: enable automatic mixed precision
 
-## Running the fused model
+## Running the fused version
 
 Load the required modules:
 
-```
+```bash
 module load pytorch rocm
 ```
 
-Run a basic training run:
+Run a short case:
 
-```
-echo "Running TinyTransformer V2 fused"
+```bash
 python tiny_llama_v2.py --batch-size 8 --seq-len 128 --num-steps 10
 ```
 
-## Runtime Trace Profiling with get_trace.sh
+The key comparison is not the absolute time alone. It is the difference between the kernel mix seen here and the one seen in version 1.
 
-This script captures GPU API calls, kernel launches, and memory operations for timeline analysis.
+## Runtime trace with `get_trace.sh`
 
-Run the profiling script:
+Run:
 
-```
-echo "Collecting runtime trace with rocprofv3"
+```bash
 ./get_trace.sh
 ```
 
-The script will output results to `traces/trace_<timestamp>/`. To analyze the results:
+Open the generated `.pftrace` file in Perfetto:
 
+```text
+https://ui.perfetto.dev/
 ```
-echo "Opening trace in Perfetto UI"
-echo "Visit https://ui.perfetto.dev/ and open the .pftrace file"
-```
 
-## Kernel Trace Profiling with get_counters.sh
+Compare the trace with version 1 and look for:
 
-This script collects kernel execution statistics including timing and call counts.
+- fewer short-lived kernels
+- reduced launch fragmentation
+- any visible change in the attention region of the step
 
-Run the profiling script:
+## Kernel trace with `get_counters.sh`
 
-```
-echo "Collecting kernel trace with rocprofv3"
+Run:
+
+```bash
 ./get_counters.sh
 ```
 
-The script will output results to `counters/counter_<timestamp>/`.
+For ROCm 7.x, summarize the resulting database with:
 
-ROCm 6.x outputs CSV files directly, while ROCm 7.x outputs SQLite databases. For ROCm 7.x database files, use rocpd tools:
-
-```
-echo "Exporting kernel statistics to CSV"
+```bash
 rocpd2csv -i <db_file> -o kernel_stats.csv
-```
-
-```
-echo "Getting kernel summary"
 rocpd summary -i <db_file> --region-categories KERNEL
 ```
 
-Documentation for rocpd tools: https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/develop/how-to/using-rocpd-output-format.html
+The important comparison against version 1 is:
 
-## GPU Hardware Metrics with get_rocprof_compute.sh
+- dispatch count
+- number of unique kernels
+- whether the dominant kernels become more concentrated
 
-This script collects detailed GPU performance metrics for hardware utilization analysis.
+## Hardware metrics with `get_rocprof_compute.sh`
 
-Run the profiling script:
+Run:
 
-```
-echo "Collecting GPU hardware metrics with rocprof-compute"
+```bash
 ./get_rocprof_compute.sh
 ```
 
-The script will output results to `rocprof_compute/profile_<timestamp>/`. To analyze the results:
+Then analyze one heavy dispatch:
 
-```
-echo "Generating performance analysis report"
-rocprof-compute analyze -p <output_dir>/workloads/<workload_name>/rocprof --dispatch <N> -n tiny_llama_dispatch
-```
-
-For available analysis options:
-
-```
-rocprof-compute analyze --help
+```bash
+rocprof-compute analyze \
+    -p rocprof_compute/profile_<timestamp>/workloads/<workload_name>/rocprof \
+    --dispatch <N> \
+    -n tiny_llama_dispatch
 ```
 
-Note: rocprof-compute requires data center GPUs (MI100, MI200, MI300 series) for full hardware counter support. Consumer GPUs may have limited counter availability.
+The main question is whether the fused path has shifted the dominant cost or merely rearranged it.
 
-## System-Level Profiling with get_rocprof_sys.sh
+## System trace with `get_rocprof_sys.sh`
 
-This script captures system-level performance with call stack sampling.
+Run:
 
-Run the profiling script:
-
-```
-echo "Collecting system-level profile with rocprof-sys"
+```bash
 ./get_rocprof_sys.sh
 ```
 
-The script will output results to `rocprof_sys/profile_<timestamp>/`. To analyze the results:
+Open the resulting `.proto` file in Perfetto when a broader system view is needed.
 
-```
-echo "Opening trace in Perfetto UI"
-echo "Visit https://ui.perfetto.dev/ and open the .proto file"
-```
+## Hotspot summary with `get_hotspots.sh`
 
-Note: rocprof-sys may produce memory map dumps in some configurations. If profiling fails or produces excessive output, consider using rocprofv3 (get_trace.sh) instead.
+Run:
 
-## GPU Hotspot Analysis with get_hotspots.sh
-
-This script identifies kernels with the highest execution time using rocprofv3 stats mode.
-
-Run the profiling script:
-
-```
-echo "Collecting GPU hotspots"
+```bash
 ./get_hotspots.sh
 ```
 
-The script will output kernel statistics to `hotspots/hotspot_<timestamp>/`.
+This is a convenient first pass when the goal is simply to see which kernels account for most of the GPU time before collecting larger traces.
 
-## Expected Performance Improvements
+## Additional resources
 
-| Optimization | Speedup | Memory Reduction | Kernel Reduction |
-|-------------|---------|------------------|------------------|
-| QKV Fusion | 1.2-1.4x | 15-25% | 33% (3→1) |
-| Flash Attention | 1.3-2.0x | 50-80% | 20% |
-| SwiGLU Fusion | 1.1-1.3x | 10-20% | 50% (2→1) |
-| Combined | 1.6-2.5x | 60-90% | 40-60% |
-
-## Additional Resources
-
-- rocprofv3 documentation: https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/develop/how-to/using-rocprofv3.html
-- rocpd output format: https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/develop/how-to/using-rocpd-output-format.html
+- comparison across versions: [`../VERSION_COMPARISON.md`](../VERSION_COMPARISON.md)
+- rocprofv3: https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/develop/how-to/using-rocprofv3.html
 - Perfetto UI: https://ui.perfetto.dev/

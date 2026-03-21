@@ -1,147 +1,93 @@
+# PyTorch Micro-Benchmark Notes
 
-# Inference Benchmark Notes
+This file collects a few technical notes that are useful when varying the default benchmark case described in `README.md`.
 
-`INFERENCE_BENCHMARK_NOTES.md` from `HPCTrainingExamples/MLExamples/inference_benchmark` in the Training Examples repository
+## Mixed precision and compilation
 
-## Basic Inference Run
+Mixed precision can be enabled with:
 
-DenseNet121 with torch.compile and mixed precision (FP16):
+```bash
+python micro_benchmarking_pytorch.py --network densenet121 --batch-size 2048 --fp16 1
+```
+
+Compilation can be enabled with:
 
 ```bash
 python micro_benchmarking_pytorch.py --network densenet121 --batch-size 2048 --compile --fp16 1
 ```
 
-## Profiling
+For short runs, the one-time compile cost may dominate the reported timing. In the validated container run, a `10`-iteration compiled `resnet50` case was much slower than the eager baseline for exactly that reason. When the goal is steady-state comparison, use a larger iteration count.
 
-### PyTorch Profiler (Kineto)
-
-Generate Chrome trace with detailed kernel timeline:
+Additional compile options may be passed through `--compileContext`, for example:
 
 ```bash
-python micro_benchmarking_pytorch.py --network densenet121 --batch-size 2048 --compile --fp16 1 --kineto --iterations 10
+python micro_benchmarking_pytorch.py \
+    --network densenet121 \
+    --batch-size 2048 \
+    --compile \
+    --fp16 1 \
+    --compileContext "{'mode': 'max-autotune', 'fullgraph': 'True'}"
 ```
 
-Output: `trace<step>.json` files (viewable in chrome://tracing)
+## MIOpen tuning
 
-Options:
-
-- `--kineto`: Enable Kineto profiler (torch.profiler with Chrome trace export)
-- `--iterations`: Number of iterations (profiler captures wait=1, warmup=2, active=2)
-
-### PyTorch Autograd Profiler (ROCTX)
-
-For use with ROCm profilers (rocprof):
-
-```bash
-python micro_benchmarking_pytorch.py --network densenet121 --batch-size 2048 --compile --fp16 1 --autograd_profiler
-```
-
-Enables ROCTX markers for correlation with GPU kernel timeline in rocprof traces.
-
-### DeepSpeed FLOPS Profiler
-
-Detailed FLOPS and memory analysis:
-
-```bash
-python micro_benchmarking_pytorch.py --network densenet121 --batch-size 2048 --fp16 1 --flops-prof-step 10 --iterations 20
-```
-
-Options:
-
-- `--flops-prof-step`: Iteration at which to capture profile (0-based index)
-- `--iterations`: Total iterations (must be > flops-prof-step)
-
-Output includes:
-
-- FLOPS per layer and operation type
-- Memory bandwidth utilization
-- Parameter count and activation memory
-- Theoretical vs achieved performance
-
-## Performance Tuning
-
-### MIOpen Kernel Tuning
-
-For optimal performance on AMD GPUs, enable MIOpen find mode:
+On systems that use MIOpen, it can be useful to allow the library to tune and cache its convolution choices before comparing results:
 
 ```bash
 export MIOPEN_FIND_ENFORCE=3
 python micro_benchmarking_pytorch.py --network densenet121 --batch-size 2048 --compile --fp16 1
 ```
 
-First run generates performance database at `~/.config/miopen/`. Subsequent runs use cached kernels.
+The first run may spend additional time building the performance database. Subsequent runs are then more meaningful for comparison.
 
-### Torch Compile Modes
+## PyTorch profiler options
 
-Default compilation:
-```bash
-python micro_benchmarking_pytorch.py --network densenet121 --batch-size 2048 --compile --fp16 1
-```
-
-Maximum optimization:
-```bash
-python micro_benchmarking_pytorch.py --network densenet121 --batch-size 2048 --compile --fp16 1 \
-    --compileContext "{'mode': 'max-autotune', 'fullgraph': 'True'}"
-```
-
-Memory and matmul optimization:
-```bash
-python micro_benchmarking_pytorch.py --network densenet121 --batch-size 2048 --compile --fp16 1 \
-    --compileContext "{'options': {'static-memory': 'True', 'matmul-padding': 'True'}}"
-```
-
-## Multi-GPU Training
-
-### 4-GPU Run
+The script also supports framework-level profiling:
 
 ```bash
-torchrun --nproc-per-node 4 micro_benchmarking_pytorch.py --network densenet121 --batch-size 2048 --compile --fp16 1
+python micro_benchmarking_pytorch.py \
+    --network densenet121 \
+    --batch-size 2048 \
+    --compile \
+    --fp16 1 \
+    --kineto \
+    --iterations 10
 ```
 
-### 8-GPU Run
+This path is useful when the goal is to correlate Python-level and operator-level behavior before moving to ROCm tools.
+
+For ROCTX correlation with ROCm profilers, use:
 
 ```bash
-torchrun --nproc-per-node 8 micro_benchmarking_pytorch.py --network densenet121 --batch-size 2048 --compile --fp16 1
+python micro_benchmarking_pytorch.py \
+    --network densenet121 \
+    --batch-size 2048 \
+    --compile \
+    --fp16 1 \
+    --autograd_profiler
 ```
 
-**Batch size behavior:**
+## DeepSpeed FLOPS profiling
 
-- `--batch-size` specifies global batch size across all GPUs
-- Each GPU processes `batch-size / nproc-per-node` samples
-- Example: `--batch-size 2048` with 4 GPUs → 512 samples/GPU
+If DeepSpeed is available, the benchmark can also be run with FLOPS profiling:
 
-### Multi-GPU Profiling
-
-#### PyTorch Profiler (Kineto)
-
-Profile 4-GPU run with trace export:
 ```bash
-torchrun --nproc-per-node 4 micro_benchmarking_pytorch.py \
-    --network densenet121 --batch-size 2048 --compile --fp16 1 \
-    --kineto --iterations 10
+python micro_benchmarking_pytorch.py \
+    --network densenet121 \
+    --batch-size 2048 \
+    --fp16 1 \
+    --flops-prof-step 10 \
+    --iterations 20
 ```
 
-Output: `trace<step>.json` per rank (4 files total)
+This mode is useful when the question is about model-level efficiency rather than kernel-level execution.
 
-#### DeepSpeed FLOPS Profiler
+## Multi-GPU runs
 
-Multi-GPU FLOPS analysis:
+For distributed cases, `--batch-size` is the global batch size across all ranks. For example:
+
 ```bash
-torchrun --nproc-per-node 4 micro_benchmarking_pytorch.py \
-    --network densenet121 --batch-size 2048 --fp16 1 \
-    --flops-prof-step 10 --iterations 20
+torchrun --nproc-per-node <ngpu> micro_benchmarking_pytorch.py --network densenet121 --batch-size 2048 --compile --fp16 1
 ```
 
-Profile captures per-GPU metrics at specified iteration.
-
-## Metrics to Track
-
-- Throughput (images/sec)
-- GPU memory utilization (GB)
-- Training time per iteration (ms)
-- FLOPS efficiency (% of peak)
-- Memory bandwidth saturation (% of theoretical)
-- Kernel occupancy
-- Compilation overhead (first iteration vs steady state)
-
-
+Each rank processes `batch-size / <ngpu>` samples. When comparing distributed results, it is important to keep that interpretation in mind.

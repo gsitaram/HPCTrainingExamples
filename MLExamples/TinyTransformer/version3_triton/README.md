@@ -1,177 +1,133 @@
 # ML Example: TinyTransformer Triton with ROCm Profiling
 
-README.md from `HPCTrainingExamples/MLExamples/TinyTransformer/version3_triton` from the Training Examples repository.
+In this version we replace several frequently executed operations with custom Triton kernels. This is the first stage in the progression where the kernel mix changes substantially and the reduction in memory use becomes pronounced. For that reason, version 3 is often the most instructive comparison against the baseline.
 
-In this example we provide a Triton-optimized implementation of Tiny LLaMA with custom GPU kernels for profiling transformer workloads on AMD GPUs. This version builds on version2 with custom Triton kernels for RMSNorm, Flash Attention, and a hybrid SwiGLU approach. Several profiling scripts are provided to capture different aspects of GPU performance.
+## Changes relative to version 2
 
-## Features of the profiling scripts
+This version introduces:
 
-The version3_triton example contains several profiling scripts that capture different aspects of GPU performance:
+- Triton RMSNorm kernels
+- Triton attention kernels
+- a hybrid SwiGLU path that combines framework kernels and specialized code
+- implementation choices aimed at reducing launch count and intermediate memory traffic
 
-- **get_trace.sh**: Runtime trace collection using rocprofv3. Captures HIP/HSA API calls, kernel execution timeline, memory operations (H2D, D2H, D2D transfers), and synchronization events. Output is a Perfetto trace file for timeline visualization.
-- **get_counters.sh**: Kernel trace collection using rocprofv3. Captures kernel execution statistics including timing and call counts. Useful for identifying hotspot kernels and their execution patterns.
-- **get_rocprof_compute.sh**: Detailed GPU hardware metrics using rocprof-compute. Provides comprehensive performance analysis including compute utilization, memory bandwidth, and hardware counter data.
-- **get_rocprof_sys.sh**: System-level profiling using rocprof-sys. Captures call stack sampling and system-level performance data for end-to-end analysis.
-- **get_hotspots.sh**: GPU hotspot analysis using rocprofv3 stats mode. Identifies kernels with highest time consumption.
-
-## Key Optimizations
-
-This version implements custom Triton GPU kernels:
-
-- **RMSNorm Triton Kernel**: Fused variance computation and normalization (3 kernels → 1)
-- **Flash Attention Triton Kernel**: Memory-efficient attention with O(S) complexity instead of O(S²)
-- **Hybrid SwiGLU**: PyTorch for matrix multiplications + Triton for activation fusion
-- **Automatic Tuning**: Triton compiler optimizations for target hardware
+The repository comparison in [`../VERSION_COMPARISON.md`](../VERSION_COMPARISON.md) shows that this version reduces dispatch count, total GPU time, and peak memory relative to version 1 by a substantial margin.
 
 ## Overview of the model
 
-The model is controlled with the following arguments:
+The main command-line arguments are:
 
-- `--batch-size <N>`: batch size for training (default: 8)
-- `--seq-len <N>`: sequence length (default: 256)
-- `--num-steps <N>`: number of training steps (default: 50)
-- `--hidden-dim <N>`: hidden dimension (default: 512)
-- `--num-layers <N>`: number of transformer layers (default: 8)
-- `--num-heads <N>`: number of attention heads (default: 8)
-- `--learning-rate <float>`: learning rate (default: 3e-4)
+- `--batch-size <N>`: batch size for training
+- `--seq-len <N>`: sequence length
+- `--num-steps <N>`: number of training steps
+- `--hidden-dim <N>`: hidden dimension
+- `--num-layers <N>`: number of transformer layers
+- `--num-heads <N>`: number of attention heads
+- `--learning-rate <float>`: learning rate
 - `--use-amp`: enable automatic mixed precision
 
-## Running the Triton model
+## Running the Triton version
 
 Load the required modules:
 
-```
+```bash
 module load pytorch rocm triton
 ```
 
-Run a basic training run:
+Run a short case:
 
-```
-echo "Running TinyTransformer V3 Triton"
+```bash
 python tiny_llama_v3.py --batch-size 8 --seq-len 128 --num-steps 10
 ```
 
-## Runtime Trace Profiling with get_trace.sh
+For this version, it is useful to compare not only throughput but also kernel count and memory use against versions 1 and 2.
 
-This script captures GPU API calls, kernel launches, and memory operations for timeline analysis.
+## Runtime trace with `get_trace.sh`
 
-Run the profiling script:
+Run:
 
-```
-echo "Collecting runtime trace with rocprofv3"
+```bash
 ./get_trace.sh
 ```
 
-The script will output results to `traces/trace_<timestamp>/`. To analyze the results:
+Open the generated `.pftrace` file in Perfetto:
 
+```text
+https://ui.perfetto.dev/
 ```
-echo "Opening trace in Perfetto UI"
-echo "Visit https://ui.perfetto.dev/ and open the .pftrace file"
-```
 
-## Kernel Trace Profiling with get_counters.sh
+Compared with the earlier versions, the main questions are:
 
-This script collects kernel execution statistics including timing and call counts.
+- whether the step is composed of fewer, heavier kernels
+- whether the attention region is easier to isolate in the trace
+- whether host-side launch overhead has become less visible
 
-Run the profiling script:
+## Kernel trace with `get_counters.sh`
 
-```
-echo "Collecting kernel trace with rocprofv3"
+Run:
+
+```bash
 ./get_counters.sh
 ```
 
-The script will output results to `counters/counter_<timestamp>/`.
+For ROCm 7.x, summarize the database with:
 
-ROCm 6.x outputs CSV files directly, while ROCm 7.x outputs SQLite databases. For ROCm 7.x database files, use rocpd tools:
-
-```
-echo "Exporting kernel statistics to CSV"
+```bash
 rocpd2csv -i <db_file> -o kernel_stats.csv
-```
-
-```
-echo "Getting kernel summary"
 rocpd summary -i <db_file> --region-categories KERNEL
 ```
 
-Documentation for rocpd tools: https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/develop/how-to/using-rocpd-output-format.html
+This version is a good place to compare:
 
-## GPU Hardware Metrics with get_rocprof_compute.sh
+- dispatch count versus version 1
+- concentration of time in the top kernels
+- whether Triton kernels now appear among the dominant entries
 
-This script collects detailed GPU performance metrics for hardware utilization analysis.
+## Hardware metrics with `get_rocprof_compute.sh`
 
-Run the profiling script:
+Run:
 
-```
-echo "Collecting GPU hardware metrics with rocprof-compute"
+```bash
 ./get_rocprof_compute.sh
 ```
 
-The script will output results to `rocprof_compute/profile_<timestamp>/`. To analyze the results:
+Then analyze a dispatch of interest:
 
-```
-echo "Generating performance analysis report"
-rocprof-compute analyze -p <output_dir>/workloads/<workload_name>/rocprof --dispatch <N> -n tiny_llama_dispatch
-```
-
-For available analysis options:
-
-```
-rocprof-compute analyze --help
+```bash
+rocprof-compute analyze \
+    -p rocprof_compute/profile_<timestamp>/workloads/<workload_name>/rocprof \
+    --dispatch <N> \
+    -n tiny_llama_dispatch
 ```
 
-Note: rocprof-compute requires data center GPUs (MI100, MI200, MI300 series) for full hardware counter support. Consumer GPUs may have limited counter availability.
+At this stage the report is especially useful because the set of important kernels is smaller than in the baseline.
 
-## System-Level Profiling with get_rocprof_sys.sh
+## System trace with `get_rocprof_sys.sh`
 
-This script captures system-level performance with call stack sampling.
+Run:
 
-Run the profiling script:
-
-```
-echo "Collecting system-level profile with rocprof-sys"
+```bash
 ./get_rocprof_sys.sh
 ```
 
-The script will output results to `rocprof_sys/profile_<timestamp>/`. To analyze the results:
+Use the system trace when the interaction between Python, Triton compilation, and GPU execution needs to be studied at a broader level.
 
-```
-echo "Opening trace in Perfetto UI"
-echo "Visit https://ui.perfetto.dev/ and open the .proto file"
-```
+## Hotspot summary with `get_hotspots.sh`
 
-Note: rocprof-sys may produce memory map dumps in some configurations. If profiling fails or produces excessive output, consider using rocprofv3 (get_trace.sh) instead.
+Run:
 
-## GPU Hotspot Analysis with get_hotspots.sh
-
-This script identifies kernels with the highest execution time using rocprofv3 stats mode.
-
-Run the profiling script:
-
-```
-echo "Collecting GPU hotspots"
+```bash
 ./get_hotspots.sh
 ```
 
-The script will output kernel statistics to `hotspots/hotspot_<timestamp>/`.
+This is often the quickest way to confirm that the dominant kernels have changed in the expected direction before collecting larger traces.
 
-## Expected Performance Improvements
+## Workshop note
 
-Results from AMD MI325X with ROCm 6.4.4:
+A short companion exercise sequence is given in [`README_WORKSHOP.md`](README_WORKSHOP.md). The performance-debugging exercise under [`exercises/performance_debugging`](exercises/performance_debugging) is also useful when the goal is to understand how the final optimized path was reached.
 
-| Version | Throughput | Memory | Improvement |
-|---------|-----------|--------|-------------|
-| V1 Baseline | 372.9 samples/sec | 522.3 MB | - |
-| V3 Triton | 2065.0 samples/sec | 281.8 MB | 5.5x faster, 46% less memory |
+## Additional resources
 
-Key optimizations impact:
-- Flash Attention (Triton): 46% memory reduction
-- RMSNorm (Triton): 3 kernels → 1
-- Hybrid SwiGLU: PyTorch matmul + Triton activation
-
-## Additional Resources
-
-- rocprofv3 documentation: https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/develop/how-to/using-rocprofv3.html
-- rocpd output format: https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/develop/how-to/using-rocpd-output-format.html
+- comparison across versions: [`../VERSION_COMPARISON.md`](../VERSION_COMPARISON.md)
+- Triton tutorials: https://triton-lang.org/main/getting-started/tutorials/index.html
 - Perfetto UI: https://ui.perfetto.dev/
-- Triton Language Tutorial: https://triton-lang.org/main/getting-started/tutorials/index.html

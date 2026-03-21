@@ -38,4 +38,10 @@ echo "Generated files:"
 ls -lh "$OUTPUT_DIR"
 echo ""
 echo "To analyze results:"
-echo "  Open the .proto file in Perfetto UI: https://ui.perfetto.dev/"
+PROTO_FILE=$(find "$OUTPUT_DIR" -name "*.proto" 2>/dev/null | head -1)
+if [ -n "$PROTO_FILE" ]; then
+    echo "  Perfetto trace file: $PROTO_FILE"
+    echo "  Open it in Perfetto UI: https://ui.perfetto.dev/"
+else
+    echo "  Open the generated .proto file in Perfetto UI: https://ui.perfetto.dev/"
+fi

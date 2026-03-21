@@ -1,155 +1,157 @@
 # ML Example: TinyTransformer Baseline with ROCm Profiling
 
-README.md from `HPCTrainingExamples/MLExamples/TinyTransformer/version1_pytorch_baseline` from the Training Examples repository.
+In this version we consider a baseline PyTorch implementation of a small decoder-only transformer. This is the reference point for the optimized versions in the directory. The model is intentionally modest in size so that full training runs and profiler traces can be collected without introducing unnecessary complexity.
 
-In this example we provide a baseline PyTorch implementation of Tiny LLaMA for profiling transformer workloads on AMD GPUs. The model runs forward and backward passes with configurable batch size and sequence length, measuring training throughput. This workload is useful for understanding transformer performance characteristics and for learning ROCm profiling tools. Several profiling scripts are provided to capture different aspects of GPU performance, from high-level API traces to detailed hardware metrics.
+## Features of this version
 
-## Features of the profiling scripts
-
-The version1_pytorch_baseline example contains several profiling scripts that capture different aspects of GPU performance:
-
-- **get_trace.sh**: Runtime trace collection using rocprofv3. Captures HIP/HSA API calls, kernel execution timeline, memory operations (H2D, D2H, D2D transfers), and synchronization events. Output is a Perfetto trace file for timeline visualization.
-- **get_counters.sh**: Kernel trace collection using rocprofv3. Captures kernel execution statistics including timing and call counts. Useful for identifying hotspot kernels and their execution patterns.
-- **get_rocprof_compute.sh**: Detailed GPU hardware metrics using rocprof-compute. Provides comprehensive performance analysis including compute utilization, memory bandwidth, and hardware counter data.
-- **get_rocprof_sys.sh**: System-level profiling using rocprof-sys. Captures call stack sampling and system-level performance data for end-to-end analysis.
+- plain PyTorch implementation of the model and training loop
+- configurable batch size, sequence length, hidden dimension, and layer count
+- optional PyTorch profiler and DeepSpeed FLOPS profiler hooks in the Python driver
+- ROCm profiling scripts for runtime traces, kernel traces, hardware metrics, and system traces
 
 ## Overview of the model
 
-The model is controlled with the following arguments:
+The main command-line arguments are:
 
-- `--batch-size <N>`: batch size for training (default: 8)
-- `--seq-len <N>`: sequence length (default: 256)
-- `--num-steps <N>`: number of training steps (default: 50)
-- `--hidden-dim <N>`: hidden dimension (default: 512)
-- `--num-layers <N>`: number of transformer layers (default: 8)
-- `--num-heads <N>`: number of attention heads (default: 8)
-- `--learning-rate <float>`: learning rate (default: 3e-4)
+- `--batch-size <N>`: batch size for training
+- `--seq-len <N>`: sequence length
+- `--num-steps <N>`: number of training steps
+- `--hidden-dim <N>`: hidden dimension
+- `--num-layers <N>`: number of transformer layers
+- `--num-heads <N>`: number of attention heads
+- `--learning-rate <float>`: learning rate
 - `--use-amp`: enable automatic mixed precision
-- `--enable-pytorch-profiler`: enable PyTorch profiler
-- `--enable-deepspeed-flops`: enable DeepSpeed FLOPS profiler
+- `--enable-pytorch-profiler`: enable the PyTorch profiler
+- `--enable-deepspeed-flops`: enable DeepSpeed FLOPS profiling
+
+This version is the one to profile first because it establishes the kernel mix and memory behavior before any fusion or custom kernels are introduced.
 
 ## Running the baseline
 
 Load the required modules:
 
-```
+```bash
 module load pytorch rocm
 ```
 
-Run a basic training run:
+Run a short baseline case:
 
-```
-echo "Running TinyTransformer baseline"
+```bash
 python tiny_llama_v1.py --batch-size 8 --seq-len 128 --num-steps 10
 ```
 
-For mixed precision training:
+The main quantities to record are the average time per step, the throughput, and the reported memory use. These are the reference numbers to compare with the later versions.
 
-```
-echo "Running with automatic mixed precision"
-python tiny_llama_v1.py --batch-size 16 --seq-len 128 --num-steps 10 --use-amp
-```
+## Runtime trace with `get_trace.sh`
 
-## Runtime Trace Profiling with get_trace.sh
+Run the script:
 
-This script captures GPU API calls, kernel launches, and memory operations for timeline analysis.
-
-Run the profiling script:
-
-```
-echo "Collecting runtime trace with rocprofv3"
+```bash
 ./get_trace.sh
 ```
 
-The script will output results to `traces/trace_<timestamp>/`. To analyze the results:
+The script writes a timestamped directory under `traces/trace_*`. Open the generated `.pftrace` file in Perfetto:
 
-```
-echo "Opening trace in Perfetto UI"
-echo "Visit https://ui.perfetto.dev/ and open the .pftrace file"
+```text
+https://ui.perfetto.dev/
 ```
 
-If a `.db` file is generated instead (ROCm 7.x without --output-format):
+At this stage it is useful to identify the basic structure of one training step:
 
-```
-echo "Converting database to Perfetto format"
+- host-side launch activity
+- forward kernels
+- backward kernels
+- synchronization points
+
+If a ROCm 7.x database is produced instead of a Perfetto trace, convert it with:
+
+```bash
 rocpd2pftrace -i <db_file> -o trace.pftrace
 ```
 
-## Kernel Trace Profiling with get_counters.sh
+## Kernel trace with `get_counters.sh`
 
-This script collects kernel execution statistics including timing and call counts.
+Run the script:
 
-Run the profiling script:
-
-```
-echo "Collecting kernel trace with rocprofv3"
+```bash
 ./get_counters.sh
 ```
 
-The script will output results to `counters/counter_<timestamp>/`.
+The script writes to `counters/counter_*`. On ROCm 7.x the output is typically a SQLite database. Two useful follow-up commands are:
 
-ROCm 6.x outputs CSV files directly, while ROCm 7.x outputs SQLite databases. For ROCm 7.x database files, use rocpd tools:
-
-```
-echo "Exporting kernel statistics to CSV"
+```bash
 rocpd2csv -i <db_file> -o kernel_stats.csv
-```
-
-```
-echo "Getting kernel summary"
 rocpd summary -i <db_file> --region-categories KERNEL
 ```
 
-Documentation for rocpd tools: https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/develop/how-to/using-rocpd-output-format.html
+For the baseline version, the first quantities to inspect are:
 
-## GPU Hardware Metrics with get_rocprof_compute.sh
+- total GPU time
+- number of kernel dispatches
+- number of unique kernels
+- the kernels that dominate the forward and backward passes
 
-This script collects detailed GPU performance metrics for hardware utilization analysis.
+Those quantities become more informative once the later versions are compared against them.
 
-Run the profiling script:
+## Hardware metrics with `get_rocprof_compute.sh`
 
-```
-echo "Collecting GPU hardware metrics with rocprof-compute"
+Run the script:
+
+```bash
 ./get_rocprof_compute.sh
 ```
 
-The script will output results to `rocprof_compute/profile_<timestamp>/`. To analyze the results:
+The script writes to `rocprof_compute/profile_*`. The report generation step has the form:
 
-```
-echo "Generating performance analysis report"
-rocprof-compute analyze -p <output_dir>/workloads/<workload_name>/rocprof --dispatch <N> -n tiny_llama_dispatch
-```
-
-For available analysis options:
-
-```
-rocprof-compute analyze --help
+```bash
+rocprof-compute analyze \
+    -p rocprof_compute/profile_<timestamp>/workloads/<workload_name>/rocprof \
+    --dispatch <N> \
+    -n tiny_llama_dispatch
 ```
 
-Note: rocprof-compute requires data center GPUs (MI100, MI200, MI300 series) for full hardware counter support. Consumer GPUs may have limited counter availability.
+This step is most useful after the kernel trace has identified a dispatch worth studying in more detail.
 
-## System-Level Profiling with get_rocprof_sys.sh
+## System trace with `get_rocprof_sys.sh`
 
-This script captures system-level performance with call stack sampling.
+Run the script:
 
-Run the profiling script:
-
-```
-echo "Collecting system-level profile with rocprof-sys"
+```bash
 ./get_rocprof_sys.sh
 ```
 
-The script will output results to `rocprof_sys/profile_<timestamp>/`. To analyze the results:
+The script writes to `rocprof_sys/profile_*`. Open the resulting `.proto` file in Perfetto:
 
+```text
+https://ui.perfetto.dev/
 ```
-echo "Opening trace in Perfetto UI"
-echo "Visit https://ui.perfetto.dev/ and open the .proto file"
+
+This view is helpful when the interaction between Python, libraries, and GPU execution matters more than kernel timing alone.
+
+## Optional framework-level profiling
+
+The Python driver also exposes framework-level instrumentation. For example:
+
+```bash
+python tiny_llama_v1.py \
+    --batch-size 8 \
+    --seq-len 128 \
+    --num-steps 20 \
+    --enable-pytorch-profiler \
+    --profile-dir ./pytorch_profiles \
+    --profile-steps 5
 ```
 
-Note: rocprof-sys may produce memory map dumps in some configurations. If profiling fails or produces excessive output, consider using rocprofv3 (get_trace.sh) instead.
+The resulting trace can be viewed with TensorBoard:
 
-## Additional Resources
+```bash
+tensorboard --logdir ./pytorch_profiles --port 6006
+```
 
-- rocprofv3 documentation: https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/develop/how-to/using-rocprofv3.html
-- rocpd output format: https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/develop/how-to/using-rocpd-output-format.html
+A short exercise sequence for this directory is given in [`PYTORCH_BASELINE_WORKSHOP_WALKTHROUGH.md`](PYTORCH_BASELINE_WORKSHOP_WALKTHROUGH.md).
+
+## Additional resources
+
+- rocprofv3: https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/develop/how-to/using-rocprofv3.html
+- rocpd tools: https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/develop/how-to/using-rocpd-output-format.html
 - Perfetto UI: https://ui.perfetto.dev/

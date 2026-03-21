@@ -6,6 +6,20 @@
 
 set -e
 
+# rocprof-compute counter support is primarily available on Instinct GPUs.
+# On consumer parts such as gfx1100, the tool may fail before profiling starts.
+GPU_ARCH=$(rocminfo 2>/dev/null | awk '/^[[:space:]]+Name:[[:space:]]+gfx/ {print $2; exit}')
+SUPPORTED_ARCH_REGEX='^(gfx908|gfx90a|gfx940|gfx941|gfx942)$'
+
+if [ -n "$GPU_ARCH" ] && ! echo "$GPU_ARCH" | grep -Eq "$SUPPORTED_ARCH_REGEX"; then
+    echo "Skipping rocprof-compute profiling for pytorch_microbench..."
+    echo "Detected GPU architecture: $GPU_ARCH"
+    echo "rocprof-compute hardware-counter collection currently requires a supported Instinct GPU"
+    echo "(for example gfx908, gfx90a, gfx940, gfx941, or gfx942)."
+    echo "Use get_trace.sh and get_counters.sh on this system instead."
+    exit 0
+fi
+
 # Create output directory with timestamp
 OUTPUT_DIR="profiling_results/rocprof_compute_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$OUTPUT_DIR"

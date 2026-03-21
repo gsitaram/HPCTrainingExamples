@@ -1,49 +1,50 @@
 # ML Example: PyTorch Micro-Benchmarking with ROCm Profiling
 
-README.md from `HPCTrainingExamples/MLExamples/pytorch_microbench` from the Training Examples repository.
+In this example we consider a compact PyTorch workload that is useful for learning the ROCm profiling tools on a model that is small enough to run quickly, but large enough to produce non-trivial GPU activity. The driver runs forward and backward passes for common CNN architectures and reports throughput in images per second. The scripts in this directory use `resnet50`, batch size `64`, and `10` iterations so that the outputs from the different profilers can be compared on the same workload.
 
-In this example we provide a PyTorch micro-benchmarking tool for measuring GPU throughput on AMD GPUs. The benchmark runs forward and backward passes on various CNN architectures, measuring images processed per second. This workload is useful for establishing baseline GPU performance and for learning ROCm profiling tools. Several profiling scripts are provided to capture different aspects of GPU performance, from high-level API traces to detailed hardware metrics.
-
-## Features of the profiling scripts
-
-The pytorch_microbench example contains several profiling scripts that capture different aspects of GPU performance:
-
-- **get_trace.sh**: Runtime trace collection using rocprofv3. Captures HIP/HSA API calls, kernel execution timeline, memory operations (H2D, D2H, D2D transfers), and synchronization events. Output is a Perfetto trace file for timeline visualization.
-- **get_counters.sh**: Kernel trace collection using rocprofv3. Captures kernel execution statistics including timing and call counts. Useful for identifying hotspot kernels and their execution patterns.
-- **get_rocprof_compute.sh**: Detailed GPU hardware metrics using rocprof-compute. Provides comprehensive performance analysis including compute utilization, memory bandwidth, and hardware counter data.
-- **get_rocprof_sys.sh**: System-level profiling using rocprof-sys. Captures call stack sampling and system-level performance data for end-to-end analysis.
+The purpose of the directory is straightforward. We begin with one reproducible benchmark run, then examine the same execution with a timeline trace, a kernel summary, a hardware counter report, and a system trace. In that sense, the example is meant to be read and run in the same spirit as the GhostExchange materials: one workload, a small number of commands, and a clear progression from run to analysis.
 
 ## Overview of the benchmark
 
 The benchmark is controlled with the following arguments:
 
-- `--network <name>`: neural network architecture to benchmark (alexnet, densenet121, inception_v3, resnet50, resnet101, SqueezeNet, vgg16, etc.)
-- `--batch-size <N>`: batch size for forward/backward passes (default: 64)
-- `--iterations <N>`: number of iterations to run (default: 10)
-- `--fp16 <0|1>`: enable FP16 precision (default: 0, disabled)
-- `--compile`: enable PyTorch 2.0 torch.compile optimizations
-- `--compileContext <dict>`: compilation options as Python dict string
-- `--distributed_dataparallel`: use DistributedDataParallel for multi-GPU
-- `--device_ids <ids>`: comma-separated GPU indices for distributed runs
+- `--network <name>`: network to benchmark, for example `resnet50`, `resnet101`, `densenet121`, `vgg16`, or `alexnet`
+- `--batch-size <N>`: global mini-batch size
+- `--iterations <N>`: number of timed iterations
+- `--fp16 <0|1>`: enable mixed precision when supported
+- `--compile`: enable `torch.compile`
+- `--compileContext <dict>`: pass compile options as a Python dictionary string
+- `--distributed_dataparallel`: run with distributed data parallel
+- `--device_ids <ids>`: comma-separated GPU ids for distributed runs
 
-## Running the micro-benchmark
+## Profiling scripts in this directory
+
+The directory contains four short profiling scripts:
+
+- `get_trace.sh`: collect a runtime trace with `rocprofv3`
+- `get_counters.sh`: collect a kernel trace and kernel summary data with `rocprofv3`
+- `get_rocprof_compute.sh`: collect hardware counter reports with `rocprof-compute`
+- `get_rocprof_sys.sh`: collect a system trace with `rocprof-sys`
+
+We recommend using them in the order listed above. The runtime trace shows the overall execution flow. The kernel trace identifies the dominant GPU kernels. The compute report is most useful once there is a narrower question about occupancy, memory traffic, or arithmetic intensity.
+
+## Running the benchmark
 
 Load the required modules:
 
-```
+```bash
 module load pytorch rocm
 ```
 
-Run a basic micro-benchmark with ResNet50:
+Run a baseline case:
 
-```
-echo "Running ResNet50 micro-benchmark"
+```bash
 python micro_benchmarking_pytorch.py --network resnet50 --batch-size 64 --iterations 10
 ```
 
-Example output (Radeon RX 7900 XTX, ROCm 6.4):
+Representative output from one run is shown below:
 
-```
+```text
 INFO: running forward and backward for warmup.
 INFO: running the benchmark..
 OK: finished running benchmark..
@@ -53,204 +54,137 @@ Num devices: 1
 Dtype: FP32
 Mini batch size [img] : 64
 Time per mini-batch : 0.177
-Throughput [img/sec] : 360.74
+Throughput [img/sec] : 356.09
 ```
 
-Note the throughput reported in images/second. This measures the combined forward and backward pass performance.
+The main quantity to record from this run is the throughput. For profiling, it is also useful to note the problem size and whether `torch.compile` or `--fp16 1` was enabled.
 
-For multi-GPU runs using torchrun (recommended):
+## Runtime trace with `get_trace.sh`
 
-```
-echo "Running 2-GPU micro-benchmark with torchrun"
-torchrun --nproc-per-node 2 micro_benchmarking_pytorch.py --network resnet50 --batch-size 128
-```
+Run the script:
 
-For PyTorch 2.0 compilation:
-
-```
-echo "Running with torch.compile max-autotune"
-python micro_benchmarking_pytorch.py --network resnet50 --compile --compileContext "{'mode': 'max-autotune'}"
-```
-
-## Runtime Trace Profiling with get_trace.sh
-
-This script captures GPU API calls, kernel launches, and memory operations for timeline analysis.
-
-Run the profiling script:
-
-```
-echo "Collecting runtime trace with rocprofv3"
+```bash
 ./get_trace.sh
 ```
 
-The script will output results to `profiling_results/trace_<timestamp>/`. To analyze the results:
+The script writes a timestamped directory under `profiling_results/trace_*`. On ROCm 6.x and 7.x it requests Perfetto output directly, so the main file to look for is a `.pftrace` file. Open it in Perfetto:
 
-```
-echo "Opening trace in Perfetto UI"
-echo "Visit https://ui.perfetto.dev/ and open the .pftrace file"
-```
-
-Example output (ROCm 6.4):
-
-```
-Detected ROCm version: 6.4.4-129
-Starting rocprofv3 runtime trace profiling for pytorch_microbench...
-Output directory: profiling_results/trace_20260114_151142
-Using ROCm 6.x/7.x: --output-format pftrace (generates Perfetto trace)
-
-Collecting full runtime trace (HIP/HSA API calls, kernels, memory operations)
-
-INFO: running forward and backward for warmup.
-INFO: running the benchmark..
-OK: finished running benchmark..
-...
-Profiling complete! Results saved to: profiling_results/trace_20260114_151142
-
-Generated files:
-total 25M
--rw-r--r-- 1 root root 25M Jan 14 15:11 5712_results.pftrace
-
-Perfetto trace file found: profiling_results/trace_20260114_151142/.../5712_results.pftrace
-Size: 25M
-
-To view the trace:
-  1. Visit: https://ui.perfetto.dev/
-  2. Open: profiling_results/trace_20260114_151142/.../5712_results.pftrace
+```text
+https://ui.perfetto.dev/
 ```
 
-If a `.db` file is generated instead (ROCm 7.x without --output-format):
+When reading the trace, the first questions to ask are:
 
-```
-echo "Converting database to Perfetto format"
+- where the host spends time between launches
+- whether GPU kernels run back-to-back or with visible gaps
+- how much explicit memory traffic appears relative to compute work
+- whether synchronization points serialize the execution
+
+On systems that expose more than one GPU agent, `rocprofv3` may print a warning about an unsupported secondary agent before the trace starts. In the container validation on an RX 7900 XTX system, that warning did not prevent generation of the `.pftrace` file.
+
+If a ROCm 7.x database is generated instead of a Perfetto trace, convert it with:
+
+```bash
 rocpd2pftrace -i <db_file> -o trace.pftrace
 ```
 
-## Kernel Trace Profiling with get_counters.sh
+## Kernel trace with `get_counters.sh`
 
-This script collects kernel execution statistics including timing and call counts.
+Run the script:
 
-Run the profiling script:
-
-```
-echo "Collecting kernel trace with rocprofv3"
+```bash
 ./get_counters.sh
 ```
 
-The script will output results to `profiling_results/counters_<timestamp>/`.
+The script writes to `profiling_results/counters_*`. On ROCm 6.x the main output is usually a CSV file. On ROCm 7.x the output is typically a SQLite database. For ROCm 7.x, the two most useful follow-up commands are:
 
-Example output (ROCm 6.4):
-
-```
-Detected ROCm version: 6.4.4-129
-Starting rocprofv3 kernel trace collection for pytorch_microbench...
-Output directory: profiling_results/counters_20260114_151213
-...
-Profiling complete! Results saved to: profiling_results/counters_20260114_151213
-
-Generated files:
-total 8.6M
--rw-r--r-- 1 root root 1.6K Jan 14 15:12 5864_agent_info.csv
--rw-r--r-- 1 root root 8.5M Jan 14 15:12 5864_kernel_trace.csv
-
-To analyze results:
-  Check profiling_results/counters_20260114_151213 for output files
-```
-
-ROCm 6.x outputs CSV files directly, while ROCm 7.x outputs SQLite databases. For ROCm 7.x database files, use rocpd tools:
-
-```
-echo "Exporting kernel statistics to CSV"
+```bash
 rocpd2csv -i <db_file> -o kernel_stats.csv
-```
-
-```
-echo "Getting kernel summary"
 rocpd summary -i <db_file> --region-categories KERNEL
 ```
 
-Example kernel analysis (ResNet50, 10 iterations):
+For this benchmark, the quantities that usually matter first are:
 
-```
-Total kernels: 21175
-Unique kernels: 68
-Total GPU time: 2080.62 ms
+- total GPU time
+- number of kernel dispatches
+- number of unique kernels
+- the few kernels that dominate the total time
 
-Kernel Name                                                     Count    Total(ms)      Avg(us)    %Time
---------------------------------------------------------------------------------------------------------
-miopenSp3AsmConv_v30_3_1_gfx11_fp32_f2x3_stride1                  732      760.707     1039.217    36.6%
-MIOpenBatchNormBwdSpatial                                         636      168.497      264.932     8.1%
-void at::native::vectorized_elementwise_kernel<4, at::nati...     384      120.959      314.997     5.8%
-void at::native::vectorized_elementwise_kernel<4, at::nati...     588       96.744      164.530     4.6%
-Cijk_Alik_Bljk_SB_MT64x64x8_SN_1LDSB0_APM1_ABV0_ACED0_AF0E...    2304       88.475       38.401     4.3%
-MIOpenBatchNormFwdTrainSpatial                                    480       73.505      153.136     3.5%
-Cijk_Alik_Bljk_SB_MT16x16x16_SN_1LDSB0_APM1_ABV0_ACED0_AF0...     768       70.635       91.973     3.4%
-miopenSp3AsmConv_v30_3_1_gfx11_fp32_f3x2_stride1                  108       48.377      447.933     2.3%
-...
-```
+For `resnet50`, the dominant entries are often convolution, batch normalization, and elementwise kernels from MIOpen and PyTorch. The exact names vary across hardware and ROCm versions, but the methodology does not.
 
-The top kernels show MIOpen convolutions (`miopenSp3AsmConv`) and batch normalization (`MIOpenBatchNorm`) dominate execution time, which is expected for ResNet50.
+## Hardware metrics with `get_rocprof_compute.sh`
 
-Documentation for rocpd tools: https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/develop/how-to/using-rocpd-output-format.html
+Run the script:
 
-## GPU Hardware Metrics with get_rocprof_compute.sh
-
-This script collects detailed GPU performance metrics for hardware utilization analysis.
-
-Run the profiling script:
-
-```
-echo "Collecting GPU hardware metrics with rocprof-compute"
+```bash
 ./get_rocprof_compute.sh
 ```
 
-The script will output results to `profiling_results/rocprof_compute_<timestamp>/`. To analyze the results:
+The script writes a timestamped workload directory under `profiling_results/rocprof_compute_*`. The command printed at the end of the run is the command to use for report generation. In general it has the form
 
-```
-echo "Generating performance analysis report"
-rocprof-compute analyze -p <output_dir>/workloads/<workload_name>/rocprof --dispatch <N> -n microbench_dispatch
-```
-
-For available analysis options:
-
-```
-rocprof-compute analyze --help
+```bash
+rocprof-compute analyze \
+    -p profiling_results/rocprof_compute_<timestamp>/workloads/<workload_name>/rocprof \
+    --dispatch <N> \
+    -n resnet50_dispatch
 ```
 
-Note: rocprof-compute requires data center GPUs (MI100, MI200, MI300 series) for full hardware counter support. Consumer GPUs may have limited counter availability.
+This step is most useful after the runtime trace and kernel summary have identified a small set of kernels worth studying. The report can then be used to decide whether the dominant kernels appear to be limited by arithmetic throughput, memory bandwidth, or occupancy.
 
-## System-Level Profiling with get_rocprof_sys.sh
+`rocprof-compute` has the best counter coverage on Instinct class GPUs. On consumer GPUs some counters may be unavailable.
 
-This script captures system-level performance with call stack sampling.
+On the RX 7900 XTX container used for validation, `rocprof-compute` did not start collection and reported `Cannot find a supported arch in rocminfo`. For that reason, this step should be treated as optional unless the tutorial is being run on a supported Instinct GPU. The script in this directory now exits early with a short explanatory message when it detects an unsupported architecture.
 
-Run the profiling script:
+## System trace with `get_rocprof_sys.sh`
 
-```
-echo "Collecting system-level profile with rocprof-sys"
+Run the script:
+
+```bash
 ./get_rocprof_sys.sh
 ```
 
-The script will output results to `profiling_results/rocprof_sys_<timestamp>/`. To analyze the results:
+The script writes to `profiling_results/rocprof_sys_*`. Open the resulting `.proto` file in Perfetto:
 
+```text
+https://ui.perfetto.dev/
 ```
-echo "Opening trace in Perfetto UI"
-echo "Visit https://ui.perfetto.dev/ and open the .proto file"
+
+This tool is useful when the question is broader than kernel timing alone, for example when the interaction between the Python runtime, libraries, and the GPU execution needs to be examined. If the run produces excessive memory map output or is otherwise noisy on a given system, use `get_trace.sh` first and return to `rocprof-sys` only if the higher-level system view is necessary.
+
+In the container validation run, `rocprof-sys` printed warnings about `perf_event_paranoid=4` and an `RSMI_STATUS_UNEXPECTED_DATA` exception before continuing. The run still completed and generated a usable Perfetto trace. The script now prints the exact `.proto` path so that the file can be opened directly.
+
+## Variations to try
+
+Once the baseline case has been examined, the following variations are reasonable next steps:
+
+- change the network, for example `--network densenet121` or `--network vgg16`
+- enable mixed precision with `--fp16 1`
+- enable compilation with `--compile`
+- run a distributed case with `torchrun`
+
+For example:
+
+```bash
+python micro_benchmarking_pytorch.py --network densenet121 --batch-size 64 --iterations 10 --fp16 1
+python micro_benchmarking_pytorch.py --network resnet50 --batch-size 64 --iterations 10 --compile
+torchrun --nproc-per-node <ngpu> micro_benchmarking_pytorch.py --network resnet50 --batch-size 128
 ```
 
-Note: rocprof-sys may produce memory map dumps in some configurations. If profiling fails or produces excessive output, consider using rocprofv3 (get_trace.sh) instead.
+For distributed runs, set `<ngpu>` to the number of visible GPUs on the system. The container validation for this tutorial used a single discrete GPU, so the multi-GPU example was not exercised there.
 
-## Performance Tuning
+For `--compile`, use a larger iteration count if the goal is steady-state performance rather than functionality. In the validated container run, a `10`-iteration compiled case was dominated by compile overhead and therefore ran much slower than the non-compiled baseline.
 
-For optimal performance on specific hardware, tune MIOpen by setting the environment variable before running:
+## Performance note
 
-```
+On systems that use MIOpen, it can be useful to allow the library to tune and cache convolution choices before comparing results:
+
+```bash
 export MIOPEN_FIND_ENFORCE=3
-python micro_benchmarking_pytorch.py --network resnet50
+python micro_benchmarking_pytorch.py --network resnet50 --batch-size 64 --iterations 10
 ```
 
-This writes to a local performance database. See [MIOpen documentation](https://rocm.github.io/MIOpen/doc/html/perfdatabase.html) for details.
+## Additional resources
 
-## Additional Resources
-
-- rocprofv3 documentation: https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/develop/how-to/using-rocprofv3.html
-- rocpd output format: https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/develop/how-to/using-rocpd-output-format.html
+- rocprofv3: https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/develop/how-to/using-rocprofv3.html
+- rocpd tools: https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/develop/how-to/using-rocpd-output-format.html
 - Perfetto UI: https://ui.perfetto.dev/

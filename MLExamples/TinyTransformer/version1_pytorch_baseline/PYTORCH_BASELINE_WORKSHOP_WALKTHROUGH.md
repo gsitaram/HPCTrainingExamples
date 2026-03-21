@@ -1,102 +1,37 @@
-# Tiny LLaMA PyTorch Baseline - Workshop Walkthrough
+# TinyTransformer Baseline Workshop Guide
 
-PYTORCH_BASELINE_WORKSHOP_WALKTHROUGH.md from `HPCTrainingExamples/MLExamples/TinyTransformer/version1_pytorch_baseline` in the Training Examples repository.
+The main reference for this directory is the `README.md` file. This note arranges the same material as a short lab sequence that can be run in a single session.
 
-This walkthrough demonstrates profiling techniques for transformer training workloads using Tiny LLaMA V1 as the baseline model.
+## Preparation
 
-## Prerequisites
+Load the required modules:
 
-- ROCm installation with rocprofv3
-- PyTorch with ROCm support
-- DeepSpeed (optional, for FLOPS profiling)
-
-## Environment Verification
-
-Check ROCm installation:
-
-```
-rocminfo | grep "Name:"
+```bash
+module load pytorch rocm
 ```
 
-Check GPU status:
+Use the default case from the profiling scripts unless there is a reason to change it:
 
-```
-rocm-smi
-```
-
-Verify PyTorch with ROCm:
-
-```
-python3 -c "
-import torch
-print(f'PyTorch Version: {torch.__version__}')
-print(f'CUDA Available: {torch.cuda.is_available()}')
-if torch.cuda.is_available():
-    print(f'GPU Name: {torch.cuda.get_device_name(0)}')
-"
+```bash
+python tiny_llama_v1.py --batch-size 8 --seq-len 128 --num-steps 10
 ```
 
-## Model Overview
+## Exercise 1: Establish the baseline
 
-Tiny LLaMA is a scaled-down transformer decoder with configurable parameters:
+Run the model once and record:
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| hidden_dim | 256 | Model dimension |
-| n_layers | 4 | Transformer layers |
-| n_heads | 8 | Attention heads |
-| intermediate_dim | 512 | FFN intermediate dimension |
-| vocab_size | 1000 | Vocabulary size |
+- average time per step
+- throughput
+- reported memory use
 
-Default model size: ~2.9M parameters (~11 MB FP32)
+These numbers are the reference point for the later TinyTransformer versions.
 
-## Running the Baseline
+## Exercise 2: Use the PyTorch profiler
 
-Quick validation:
+Collect a short framework-level profile:
 
-```
-python3 tiny_llama_v1.py --batch-size 4 --seq-len 64 --num-steps 5
-```
-
-Standard training run:
-
-```
-python3 tiny_llama_v1.py --batch-size 8 --seq-len 128 --num-steps 20
-```
-
-Expected output:
-
-```
-==========================================
-Tiny LLaMA V1 - PyTorch Baseline
-==========================================
-Configuration:
-  Batch Size: 8
-  Sequence Length: 128
-  Number of Steps: 20
-  ...
-
-Starting training...
-Step 1/20: Loss = 6.9088, Time = 0.234 seconds
-Step 2/20: Loss = 6.9076, Time = 0.046 seconds
-...
-Step 20/20: Loss = 6.8821, Time = 0.044 seconds
-
-==========================================
-Performance Summary:
-==========================================
-Average time per step: 0.045 seconds
-Training speed: 177.8 samples/sec
-Peak memory usage: 2847 MB
-==========================================
-```
-
-## Profiling with PyTorch Profiler
-
-Enable PyTorch profiler for detailed operator-level analysis:
-
-```
-python3 tiny_llama_v1.py \
+```bash
+python tiny_llama_v1.py \
     --batch-size 8 \
     --seq-len 128 \
     --num-steps 20 \
@@ -105,95 +40,85 @@ python3 tiny_llama_v1.py \
     --profile-steps 5
 ```
 
-View results with TensorBoard:
+Open the result with TensorBoard:
 
-```
+```bash
 tensorboard --logdir ./pytorch_profiles --port 6006
 ```
 
-## Memory Analysis
+This step is useful for understanding the operator-level view before moving to ROCm tools.
 
-Test memory scaling with different batch sizes:
+## Exercise 3: Collect a runtime trace
 
-```
-python3 tiny_llama_v1.py --batch-size 4 --seq-len 128 --num-steps 15
-python3 tiny_llama_v1.py --batch-size 8 --seq-len 128 --num-steps 15
-python3 tiny_llama_v1.py --batch-size 16 --seq-len 128 --num-steps 15
-```
+Run:
 
-Test sequence length scaling:
-
-```
-python3 tiny_llama_v1.py --batch-size 8 --seq-len 64 --num-steps 10
-python3 tiny_llama_v1.py --batch-size 8 --seq-len 128 --num-steps 10
-python3 tiny_llama_v1.py --batch-size 8 --seq-len 256 --num-steps 10
+```bash
+./get_trace.sh
 ```
 
-Memory scales linearly with batch size and quadratically with sequence length (due to attention matrices).
+Open the resulting `.pftrace` file in Perfetto:
 
-## Performance Study
-
-Use the performance study launcher for pre-configured problem sizes:
-
-```
-./launch_performance_study.sh tiny
-./launch_performance_study.sh small
-./launch_performance_study.sh medium --enable-profilers
+```text
+https://ui.perfetto.dev/
 ```
 
-Available problem sizes:
+Identify the broad structure of one training step:
 
-| Size | Hidden Dim | Layers | Seq Len | Batch | Est. Parameters |
-|------|-----------|--------|---------|-------|-----------------|
-| tiny | 256 | 4 | 128 | 8 | ~2.9M |
-| small | 512 | 8 | 256 | 8 | ~20.9M |
-| medium | 1024 | 12 | 512 | 16 | ~167M |
-| large | 2048 | 16 | 1024 | 8 | ~1.3B |
+- host launches
+- forward-pass kernels
+- backward-pass kernels
+- synchronization events
 
-## Key Performance Metrics
+## Exercise 4: Identify hotspot kernels
 
-- **Training Speed**: samples/sec processed
-- **FLOPS**: Floating point operations per second
-- **MFU**: Model FLOPS Utilization (% of theoretical peak)
-- **Memory Usage**: Peak GPU memory consumed
+Run:
 
-Baseline performance characteristics:
-- Training speed: 50-200 samples/sec (varies by hardware)
-- GPU utilization: 60-75% (typical for baseline PyTorch)
-- Attention operations: ~35-45% of compute time
-- FFN operations: ~30-40% of compute time
-
-## Optimization Opportunities
-
-Based on profiling analysis, the baseline model shows opportunities for:
-
-1. **Kernel Fusion**: Combine separate QKV projections into single GEMM
-2. **Flash Attention**: Reduce attention memory from O(S^2) to O(S)
-3. **SwiGLU Fusion**: Combine gate and up projections
-4. **Mixed Precision**: FP16/BF16 for 2x memory reduction
-
-## Troubleshooting
-
-CUDA/ROCm memory errors:
-
-```
-python3 tiny_llama_v1.py --batch-size 4 --seq-len 64 --num-steps 10
+```bash
+./get_counters.sh
 ```
 
-Check GPU utilization:
+If the result is a ROCm 7.x database, summarize it with:
 
-```
-rocm-smi
-```
-
-Memory fragmentation:
-
-```
-export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+```bash
+rocpd2csv -i <db_file> -o kernel_stats.csv
+rocpd summary -i <db_file> --region-categories KERNEL
 ```
 
-## Additional Resources
+Record:
 
-- [PyTorch Profiler Documentation](https://pytorch.org/tutorials/recipes/recipes/profiler_recipe.html)
-- [ROCm Documentation](https://rocm.docs.amd.com/)
-- [DeepSpeed FLOPS Profiler](https://www.deepspeed.ai/tutorials/flops-profiler/)
+- total GPU time
+- number of dispatches
+- top three kernels by time
+
+The goal here is to establish what the baseline spends time on before any fusion is introduced.
+
+## Exercise 5: Hardware metrics
+
+Run:
+
+```bash
+./get_rocprof_compute.sh
+```
+
+Then generate a report for one heavy dispatch:
+
+```bash
+rocprof-compute analyze \
+    -p rocprof_compute/profile_<timestamp>/workloads/<workload_name>/rocprof \
+    --dispatch <N> \
+    -n tiny_llama_dispatch
+```
+
+Questions to answer:
+
+- does the kernel appear memory bound or compute bound
+- is occupancy a likely concern
+- does the report agree with the hotspot list from Exercise 4
+
+## Exercise 6: Compare with the next version
+
+After the baseline has been characterized, move to `../version2_pytorch_fused` and repeat the same sequence. The comparison is more useful than any single run in isolation.
+
+## Closing remark
+
+If only a short session is available, Exercises 1 through 4 are sufficient. They provide a complete path from baseline run to trace to hotspot identification.

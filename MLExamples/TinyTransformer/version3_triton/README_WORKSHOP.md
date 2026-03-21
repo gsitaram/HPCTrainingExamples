@@ -1,76 +1,89 @@
-# Version 3: Triton Kernel Integration - Workshop Edition
+# TinyTransformer Triton Workshop Guide
 
-README_WORKSHOP.md from `HPCTrainingExamples/MLExamples/TinyTransformer/version3_triton` in the Training Examples repository.
+The main reference for this directory is the `README.md` file. This note keeps a short exercise sequence for a training session focused on the Triton version.
 
-## Quick Start
+## Preparation
 
+Load the required modules:
+
+```bash
+module load pytorch rocm triton
 ```
-cd version3_triton/
-python tiny_llama_v3.py --batch-size 8 --seq-len 128 --num-steps 20
+
+Run a short case:
+
+```bash
+python tiny_llama_v3.py --batch-size 8 --seq-len 128 --num-steps 10
 ```
 
-Expected output: Loss ~7.0, Speed ~2065 samples/sec, Memory ~282 MB
+Record the throughput and the reported memory use.
 
-## Performance Results (AMD MI325X, ROCm 6.4.4)
+## Exercise 1: Compare against the baseline
 
-| Metric | V1 Baseline | V3 Optimized | Improvement |
-|--------|-------------|--------------|-------------|
-| Training Speed | 372.9 samples/sec | 2065.0 samples/sec | 5.5x faster |
-| Memory Usage | 522.3 MB | 281.8 MB | 46% reduction |
+Before profiling version 3 in isolation, place its throughput and memory side by side with the numbers from `../version1_pytorch_baseline`. The comparison is the main point of the exercise.
 
-## Optimizations Applied
+## Exercise 2: Hotspot list
 
-### 1. Flash Attention (Triton Kernel)
-Memory-efficient attention using online softmax. Reduces memory from O(S²) to O(S).
+Collect a fast hotspot summary:
 
-### 2. RMSNorm (Triton Kernel)
-Fused variance computation + normalization (3 kernels → 1).
-
-### 3. Hybrid SwiGLU Strategy
-Use PyTorch/rocBLAS for matrix multiplies, PyTorch for activation. Custom Triton kernel was 2.4x slower.
-
-### 4. Tensor Contiguity
-Always `.contiguous()` before Triton kernels. Non-contiguous tensors caused 20x slowdown.
-
-### 5. Weight Initialization
-Proper initialization (std=0.02) prevents exploding loss.
-
-## Key Learnings
-
-1. **Correctness First**: Validate before optimizing
-2. **Memory Layout Matters**: Non-contiguous tensors kill performance
-3. **Hybrid Wins**: Use best tool for each operation
-4. **Measure Accurately**: Always `torch.cuda.synchronize()` for timing
-5. **Iterate**: Fix one issue at a time, re-measure
-
-## Performance Debugging Exercise
-
+```bash
+./get_hotspots.sh
 ```
-cd exercises/performance_debugging/
+
+Use this run to identify the kernels that dominate time and to confirm that the kernel set is more concentrated than in the baseline.
+
+## Exercise 3: Runtime trace
+
+Collect a runtime trace:
+
+```bash
+./get_trace.sh
+```
+
+Open the resulting `.pftrace` file in Perfetto:
+
+```text
+https://ui.perfetto.dev/
+```
+
+Compare the trace with version 1 and ask:
+
+- does the step consist of fewer, heavier kernels
+- is the attention region easier to recognize
+- are there fewer visible gaps between launches
+
+## Exercise 4: Kernel trace
+
+Collect a kernel trace:
+
+```bash
+./get_counters.sh
+```
+
+If needed, summarize a ROCm 7.x database with:
+
+```bash
+rocpd2csv -i <db_file> -o kernel_stats.csv
+rocpd summary -i <db_file> --region-categories KERNEL
+```
+
+Record:
+
+- dispatch count
+- number of unique kernels
+- top three kernels by time
+
+## Exercise 5: Performance debugging path
+
+If time permits, run the staged exercise:
+
+```bash
+cd exercises/performance_debugging
 ./run_all_stages.sh
 ```
 
-Shows the complete optimization journey through 5 stages:
-- Stage 1: Broken (loss=942) - missing weight init
-- Stage 2: Slow (15 samp/s) - non-contiguous tensors
-- Stage 3: Better (311 samp/s) - added .contiguous()
-- Stage 4: Same (306 samp/s) - accurate timing revealed issue
-- Stage 5: Optimal (2065 samp/s) - hybrid kernel strategy
+This exercise is useful because it shows that the final performance comes from a sequence of correctness and layout fixes, not from a single change.
 
-## Common Issues
+## Closing remark
 
-**ImportError: No module named 'triton'**
-```
-pip install triton
-```
-
-**Performance slower than expected**
-- Ensure tensors are contiguous
-- Use CUDA synchronization for accurate timing
-- Use hybrid SwiGLU (not custom Triton matmul)
-
-## Additional Resources
-
-- Triton Documentation: https://triton-lang.org/
-- Flash Attention Paper: https://arxiv.org/abs/2205.14135
-- Performance Debugging Guide: exercises/performance_debugging/README.md
+Version 3 is often the clearest point in the tutorial sequence to discuss why kernel specialization changes both performance and profiler output. For a short lab, Exercises 1 through 4 are sufficient.

@@ -1,47 +1,46 @@
 #!/bin/bash
-#
-# Get system-level profiling using rocprof-sys
-# Compatible with ROCm 6.x and 7.x
-#
-# NOTE: rocprof-sys may produce memory map dumps in some configurations.
-# Issue reference: TBD
-#
+# Collect a system trace for TinyTransformer V1 with rocprof-sys.
 
-set -e
+set -euo pipefail
 
-echo "=========================================="
-echo "rocprof-sys Profiling - Version 1"
-echo "=========================================="
-echo ""
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TINYTRANSFORMER_SCRIPT_DIR="$SCRIPT_DIR"
+TINYTRANSFORMER_MODEL_SCRIPT="tiny_llama_v1.py"
+TINYTRANSFORMER_WORKLOAD_NAME="tiny_llama_v1"
+TINYTRANSFORMER_DEFAULT_NUM_STEPS=2
+source "$SCRIPT_DIR/../profile_common.sh"
 
-OUTPUT_DIR="./rocprof_sys/profile_$(date +%Y%m%d_%H%M%S)"
-mkdir -p "$OUTPUT_DIR"
+require_cmd rocprof-sys-run
+require_cmd "$PYTHON_BIN"
+ensure_benchmark_script
+build_benchmark_cmd
 
+OUTPUT_DIR="$(make_output_dir rocprof_sys)"
+
+echo "Starting rocprof-sys trace for TinyTransformer V1..."
 echo "Output directory: $OUTPUT_DIR"
+print_workload_summary
 echo ""
 
-# Run with rocprof-sys to collect system-level traces
-# rocprof-sys-run provides call-stack sampling and system-level profiling
-echo "Running: rocprof-sys-run --profile --trace -- python tiny_llama_v1.py --batch-size 8 --seq-len 128 --num-steps 10"
-echo ""
-
-cd "$OUTPUT_DIR"
-rocprof-sys-run --profile --trace -- python ../../tiny_llama_v1.py --batch-size 8 --seq-len 128 --num-steps 10
-ROCPROF_EXIT=$?
+pushd "$OUTPUT_DIR" >/dev/null
+rocprof-sys-run \
+    --profile \
+    --trace \
+    -- "${BENCHMARK_CMD[@]}"
+popd >/dev/null
 
 echo ""
-if [ $ROCPROF_EXIT -eq 0 ]; then
-    echo "[SUCCESS] rocprof-sys profiling completed"
-else
-    echo "[FAILED] rocprof-sys profiling failed with exit code $ROCPROF_EXIT"
-    exit 1
-fi
+echo "Profiling complete! Results saved to: $OUTPUT_DIR"
 echo ""
-
 echo "Generated files:"
-find . -type f -ls | head -20
+print_generated_files "$OUTPUT_DIR" 4
 echo ""
-
-echo "To analyze results:"
-echo "  Open the .proto file in Perfetto UI: https://ui.perfetto.dev/"
-echo ""
+echo "Open the trace in Perfetto:"
+PROTO_FILE="$(select_largest_match "$OUTPUT_DIR" "*.proto")"
+if [ -n "$PROTO_FILE" ]; then
+    echo "  Perfetto trace file: $PROTO_FILE"
+    echo "  Open it in Perfetto UI: https://ui.perfetto.dev/"
+else
+    echo "  WARNING: No .proto file was found under $OUTPUT_DIR"
+    echo "  Inspect the output tree and open the generated trace in Perfetto UI if present."
+fi

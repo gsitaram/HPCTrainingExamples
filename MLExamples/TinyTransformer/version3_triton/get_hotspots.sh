@@ -1,55 +1,46 @@
 #!/bin/bash
-#
-# Get hotspots analysis using rocprofv3
-# Compatible with ROCm 6.x and 7.x
-#
+# Collect a quick hotspot summary for TinyTransformer V3 with rocprofv3 --stats.
 
-set -e
+set -euo pipefail
 
-echo "=========================================="
-echo "rocprofv3 Hotspots Analysis - Version 3"
-echo "=========================================="
-echo ""
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TINYTRANSFORMER_SCRIPT_DIR="$SCRIPT_DIR"
+TINYTRANSFORMER_MODEL_SCRIPT="tiny_llama_v3.py"
+TINYTRANSFORMER_WORKLOAD_NAME="tiny_llama_v3"
+source "$SCRIPT_DIR/../profile_common.sh"
 
-OUTPUT_DIR="./hotspots/hotspot_$(date +%Y%m%d_%H%M%S)"
-mkdir -p "$OUTPUT_DIR"
+require_cmd rocprofv3
+require_cmd "$PYTHON_BIN"
+ensure_benchmark_script
+build_benchmark_cmd
 
+OUTPUT_DIR="$(make_output_dir hotspots)"
+
+echo "Starting rocprofv3 hotspot summary for TinyTransformer V3..."
 echo "Output directory: $OUTPUT_DIR"
-echo ""
-echo "Running: rocprofv3 --stats -- python tiny_llama_v3.py --batch-size 8 --seq-len 128 --num-steps 10"
-echo ""
-
-cd "$OUTPUT_DIR"
-rocprofv3 --stats -- python ../../tiny_llama_v3.py --batch-size 8 --seq-len 128 --num-steps 10
-ROCPROF_EXIT=$?
-
-echo ""
-if [ $ROCPROF_EXIT -eq 0 ]; then
-    echo "[SUCCESS] Hotspot analysis completed"
-else
-    echo "[FAILED] Hotspot analysis failed with exit code $ROCPROF_EXIT"
-    exit 1
-fi
+print_workload_summary
 echo ""
 
+rocprofv3 \
+    --kernel-trace \
+    --stats \
+    --output-directory "$OUTPUT_DIR" \
+    -- "${BENCHMARK_CMD[@]}"
+
+echo ""
+echo "Profiling complete! Results saved to: $OUTPUT_DIR"
+echo ""
 echo "Generated files:"
-find . -type f -ls
+print_generated_files "$OUTPUT_DIR" 3
 echo ""
 
-# Check for stats/CSV files
-if ls *.csv 1> /dev/null 2>&1; then
-    echo "Statistics files found:"
-    for f in *.csv; do
-        echo ""
-        echo "File: $f"
-        echo "Top 10 entries:"
-        head -11 "$f"
-    done
-else
-    echo "Looking for statistics in subdirectories:"
-    find . -name "*.csv" -exec echo "Found: {}" \; -exec head -11 {} \;
+CSV_FILE="$(select_largest_match "$OUTPUT_DIR" "*_kernel_stats.csv")"
+if [ -z "$CSV_FILE" ]; then
+    CSV_FILE="$(select_largest_match "$OUTPUT_DIR" "*_domain_stats.csv")"
 fi
-echo ""
-
-echo "Hotspot analysis identifies GPU kernels with highest time consumption."
-echo ""
+if [ -n "$CSV_FILE" ]; then
+    echo "Top rows from $CSV_FILE:"
+    head -11 "$CSV_FILE"
+else
+    echo "WARNING: No hotspot CSV file was detected under $OUTPUT_DIR"
+fi

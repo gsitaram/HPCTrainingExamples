@@ -1,47 +1,42 @@
 #!/bin/bash
-# Script to profile pytorch_microbench with rocprof-sys
-# This captures system-level performance with call stack sampling
-#
-# Compatible with ROCm 6.x and 7.x
-#
-# NOTE: rocprof-sys may produce memory map dumps in some configurations.
-# Issue reference: TBD
+# Script to profile pytorch_microbench with rocprof-sys.
 
-set -e
+set -euo pipefail
 
-# Create output directory with timestamp
-OUTPUT_DIR="profiling_results/rocprof_sys_$(date +%Y%m%d_%H%M%S)"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/profile_common.sh"
+
+require_cmd rocprof-sys-run
+require_cmd "$PYTHON_BIN"
+ensure_benchmark_script
+build_benchmark_cmd
+
+OUTPUT_DIR="$(make_output_dir rocprof_sys)"
 mkdir -p "$OUTPUT_DIR"
 
 echo "Starting rocprof-sys profiling for pytorch_microbench..."
 echo "Output directory: $OUTPUT_DIR"
+print_workload_summary
 echo ""
 
-cd "$OUTPUT_DIR"
-
-# Run with rocprof-sys to collect system-level profile
-# Using resnet50 as the default network with standard batch size
+pushd "$OUTPUT_DIR" >/dev/null
 rocprof-sys-run \
     --profile \
     --trace \
-    -- python ../../micro_benchmarking_pytorch.py \
-    --network resnet50 \
-    --batch-size 64 \
-    --iterations 10
-
-cd ../..
+    -- "${BENCHMARK_CMD[@]}"
+popd >/dev/null
 
 echo ""
 echo "Profiling complete! Results saved to: $OUTPUT_DIR"
 echo ""
 echo "Generated files:"
-ls -lh "$OUTPUT_DIR"
+print_generated_files "$OUTPUT_DIR" 4
 echo ""
-echo "To analyze results:"
-PROTO_FILE=$(find "$OUTPUT_DIR" -name "*.proto" 2>/dev/null | head -1)
+echo "Open the trace in Perfetto:"
+PROTO_FILE="$(find "$OUTPUT_DIR" -name "*.proto" 2>/dev/null | head -1)"
 if [ -n "$PROTO_FILE" ]; then
     echo "  Perfetto trace file: $PROTO_FILE"
     echo "  Open it in Perfetto UI: https://ui.perfetto.dev/"
 else
-    echo "  Open the generated .proto file in Perfetto UI: https://ui.perfetto.dev/"
+    echo "  WARNING: No .proto file was found under $OUTPUT_DIR"
+    echo "  Inspect the output tree and open the generated trace in Perfetto UI if present."
 fi

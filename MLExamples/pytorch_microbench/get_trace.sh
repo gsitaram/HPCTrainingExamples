@@ -1,109 +1,59 @@
 #!/bin/bash
-# Script to profile pytorch_microbench with rocprofv3 runtime trace
-# This captures GPU API calls, kernel launches, and memory operations
-#
-# Compatible with ROCm 6.x and 7.x
+# Script to profile pytorch_microbench with rocprofv3 runtime trace.
 
-set -e
+set -euo pipefail
 
-# Detect ROCm version
-ROCM_VERSION=""
-ROCM_MAJOR=""
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/profile_common.sh"
 
-# Method 1: Check rocminfo
-if command -v rocminfo &> /dev/null; then
-    ROCM_VERSION=$(rocminfo | grep -i "ROCm Version" | head -1 | awk '{print $3}')
-fi
+require_cmd rocprofv3
+require_cmd "$PYTHON_BIN"
+ensure_benchmark_script
+build_benchmark_cmd
 
-# Method 2: Check ROCM_PATH
-if [ -z "$ROCM_VERSION" ] && [ -n "$ROCM_PATH" ]; then
-    if [ -f "$ROCM_PATH/.info/version" ]; then
-        ROCM_VERSION=$(cat "$ROCM_PATH/.info/version")
-    fi
-fi
-
-# Method 3: Check hipcc version (more reliable for module-loaded ROCm)
-if [ -z "$ROCM_VERSION" ] && command -v hipcc &> /dev/null; then
-    HIP_VERSION=$(hipcc --version 2>/dev/null | grep -i "HIP version" | head -1 | awk '{print $3}')
-    if [ -n "$HIP_VERSION" ]; then
-        ROCM_VERSION="$HIP_VERSION"
-    fi
-fi
-
-# Extract major version
-if [ -n "$ROCM_VERSION" ]; then
-    ROCM_MAJOR=$(echo "$ROCM_VERSION" | cut -d. -f1)
-    echo "Detected ROCm version: $ROCM_VERSION"
-else
-    echo "Warning: Could not detect ROCm version, assuming ROCm 7.x"
-    ROCM_MAJOR="7"
-fi
-
-# Create output directory with timestamp
-OUTPUT_DIR="profiling_results/trace_$(date +%Y%m%d_%H%M%S)"
-mkdir -p "$OUTPUT_DIR"
+ROCM_VERSION="$(detect_rocm_version)"
+ROCM_MAJOR="$(rocm_major_from_version "$ROCM_VERSION")"
+OUTPUT_DIR="$(make_output_dir trace)"
 
 echo "Starting rocprofv3 runtime trace profiling for pytorch_microbench..."
-echo "Output directory: $OUTPUT_DIR"
-
-# Build rocprofv3 command with appropriate flags for ROCm version
-# ROCm 6.4+ and 7.x require explicit --output-format pftrace to generate Perfetto traces
-# Earlier ROCm 6.x versions (6.0-6.3) generated pftrace by default
-if [ "$ROCM_MAJOR" = "7" ] || [ "$ROCM_MAJOR" = "6" ]; then
-    echo "Using ROCm 6.x/7.x: --output-format pftrace (generates Perfetto trace)"
-    OUTPUT_FORMAT="--output-format pftrace"
+if [ -n "$ROCM_VERSION" ]; then
+    echo "Detected ROCm version: $ROCM_VERSION"
 else
-    echo "Using ROCm 5.x or older: default format"
-    OUTPUT_FORMAT=""
+    echo "Warning: Could not detect ROCm version. Proceeding without version-specific assumptions."
+fi
+echo "Output directory: $OUTPUT_DIR"
+print_workload_summary
+
+TRACE_CMD=(rocprofv3 --runtime-trace --output-directory "$OUTPUT_DIR")
+if [ "$ROCM_MAJOR" = "6" ] || [ "$ROCM_MAJOR" = "7" ]; then
+    echo "Using explicit Perfetto output for ROCm $ROCM_MAJOR.x."
+    TRACE_CMD+=(--output-format pftrace)
 fi
 
 echo ""
-echo "Collecting full runtime trace (HIP/HSA API calls, kernels, memory operations)"
+echo "Collecting full runtime trace (API calls, kernels, memory operations, and synchronization events)..."
 echo ""
 
-# Run with rocprofv3 to collect full runtime trace
-# Using resnet50 as the default network with standard batch size
-# NOTE: Using --runtime-trace to capture complete timeline:
-#       - HIP/HSA API calls
-#       - Kernel execution on GPU
-#       - Memory operations (H2D, D2H, D2D transfers)
-#       - Synchronization events
-#       This provides the comprehensive view needed for timeline analysis in Perfetto
-rocprofv3 \
-    --runtime-trace \
-    $OUTPUT_FORMAT \
-    --output-directory "$OUTPUT_DIR" \
-    -- python micro_benchmarking_pytorch.py \
-    --network resnet50 \
-    --batch-size 64 \
-    --iterations 10
+"${TRACE_CMD[@]}" -- "${BENCHMARK_CMD[@]}"
 
 echo ""
 echo "Profiling complete! Results saved to: $OUTPUT_DIR"
 echo ""
 echo "Generated files:"
-ls -lh "$OUTPUT_DIR"/*/ 2>/dev/null || ls -lh "$OUTPUT_DIR"
+print_generated_files "$OUTPUT_DIR" 3
 echo ""
 
-# Find and highlight the pftrace file
-PFTRACE_FILE=$(find "$OUTPUT_DIR" -name "*.pftrace" | head -1)
-DB_FILE=$(find "$OUTPUT_DIR" -name "*.db" | head -1)
+PFTRACE_FILE="$(find "$OUTPUT_DIR" -name "*.pftrace" | head -1)"
+DB_FILE="$(find "$OUTPUT_DIR" -name "*.db" | head -1)"
 
 if [ -n "$PFTRACE_FILE" ]; then
-    echo "Perfetto trace file found: $PFTRACE_FILE"
+    echo "Perfetto trace file: $PFTRACE_FILE"
     echo "Size: $(du -h "$PFTRACE_FILE" | cut -f1)"
-    echo ""
-    echo "To view the trace:"
-    echo "  1. Visit: https://ui.perfetto.dev/"
-    echo "  2. Open: $PFTRACE_FILE"
+    echo "Open it in Perfetto UI: https://ui.perfetto.dev/"
 elif [ -n "$DB_FILE" ]; then
-    echo "SQLite database found (ROCm 7.x without --output-format): $DB_FILE"
-    echo "To convert to Perfetto format:"
-    echo "  rocpd2pftrace -i $DB_FILE -o trace.pftrace"
-    echo ""
-    echo "Next time, use --output-format pftrace to generate Perfetto traces directly"
+    echo "SQLite database found: $DB_FILE"
+    echo "Convert it to Perfetto format with:"
+    echo "  rocpd2pftrace -i \"$DB_FILE\" -o trace.pftrace"
 else
-    echo "WARNING: No .pftrace or .db file found"
-    echo "Check the output directory for profiling results"
+    echo "WARNING: No .pftrace or .db file was found under $OUTPUT_DIR"
 fi
 echo ""

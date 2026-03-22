@@ -1,32 +1,17 @@
-# ML Example: TinyTransformer Triton with ROCm Profiling
+# TinyTransformer Version 3: Triton Kernels
 
-In this version we replace several frequently executed operations with custom Triton kernels. This is the first stage in the progression where the kernel mix changes substantially and the reduction in memory use becomes pronounced. For that reason, version 3 is often the most instructive comparison against the baseline.
+Version 3 is where the progression changes materially. The custom Triton kernels reduce memory use, change the dominant kernel set, and move the training loop into a different performance regime.
 
-## Changes relative to version 2
+## What changed
 
-This version introduces:
+Relative to version 2, this version introduces:
 
 - Triton RMSNorm kernels
 - Triton attention kernels
-- a hybrid SwiGLU path that combines framework kernels and specialized code
-- implementation choices aimed at reducing launch count and intermediate memory traffic
+- a Triton-backed SwiGLU path
+- a smaller, more concentrated kernel mix
 
-The repository comparison in [`../VERSION_COMPARISON.md`](../VERSION_COMPARISON.md) shows that this version reduces dispatch count, total GPU time, and peak memory relative to version 1 by a substantial margin.
-
-## Overview of the model
-
-The main command-line arguments are:
-
-- `--batch-size <N>`: batch size for training
-- `--seq-len <N>`: sequence length
-- `--num-steps <N>`: number of training steps
-- `--hidden-dim <N>`: hidden dimension
-- `--num-layers <N>`: number of transformer layers
-- `--num-heads <N>`: number of attention heads
-- `--learning-rate <float>`: learning rate
-- `--use-amp`: enable automatic mixed precision
-
-## Running the Triton version
+## Baseline run
 
 Load the required modules:
 
@@ -34,99 +19,47 @@ Load the required modules:
 module load pytorch rocm triton
 ```
 
-Run a short case:
+Run:
 
 ```bash
 python tiny_llama_v3.py --batch-size 8 --seq-len 128 --num-steps 10
 ```
 
-For this version, it is useful to compare not only throughput but also kernel count and memory use against versions 1 and 2.
-
-## Runtime trace with `get_trace.sh`
-
-Run:
-
-```bash
-./get_trace.sh
-```
-
-Open the generated `.pftrace` file in Perfetto:
+Example output from one validated run:
 
 ```text
-https://ui.perfetto.dev/
+Performance Summary V3:
+   Average training speed: 829.9 samples/sec
+   Throughput: 106221 tokens/sec
+   Average batch time: 9.6 ms
+   Peak memory usage: 193.8 MB
 ```
 
-Compared with the earlier versions, the main questions are:
+That is the first large jump in the progression. The step time falls sharply and the memory footprint drops by more than half relative to the baseline.
 
-- whether the step is composed of fewer, heavier kernels
-- whether the attention region is easier to isolate in the trace
-- whether host-side launch overhead has become less visible
+## Profiling workflow
 
-## Kernel trace with `get_counters.sh`
+Use the same scripts as the earlier versions:
 
-Run:
+- `./get_hotspots.sh`
+- `./get_trace.sh`
+- `./get_counters.sh`
+- `./get_rocprof_compute.sh`
+- `./get_rocprof_sys.sh`
 
-```bash
-./get_counters.sh
-```
+Start with `./get_hotspots.sh`. The first thing to check is whether the dominant kernel set is now smaller and heavier than in version 1. Then use `./get_trace.sh` and `./get_counters.sh` to confirm that the trace is less fragmented and the dispatch count is lower.
 
-For ROCm 7.x, summarize the database with:
+Example hotspot plot from the validated container run:
 
-```bash
-rocpd2csv -i <db_file> -o kernel_stats.csv
-rocpd summary -i <db_file> --region-categories KERNEL
-```
+![TinyTransformer V3 hotspot summary from validated container run](../images/tinytransformer_version3_hotspots.png)
 
-This version is a good place to compare:
-
-- dispatch count versus version 1
-- concentration of time in the top kernels
-- whether Triton kernels now appear among the dominant entries
-
-## Hardware metrics with `get_rocprof_compute.sh`
-
-Run:
-
-```bash
-./get_rocprof_compute.sh
-```
-
-Then analyze a dispatch of interest:
-
-```bash
-rocprof-compute analyze \
-    -p rocprof_compute/profile_<timestamp>/workloads/<workload_name>/rocprof \
-    --dispatch <N> \
-    -n tiny_llama_dispatch
-```
-
-At this stage the report is especially useful because the set of important kernels is smaller than in the baseline.
-
-## System trace with `get_rocprof_sys.sh`
-
-Run:
-
-```bash
-./get_rocprof_sys.sh
-```
-
-Use the system trace when the interaction between Python, Triton compilation, and GPU execution needs to be studied at a broader level.
-
-## Hotspot summary with `get_hotspots.sh`
-
-Run:
-
-```bash
-./get_hotspots.sh
-```
-
-This is often the quickest way to confirm that the dominant kernels have changed in the expected direction before collecting larger traces.
+If `rocprof-compute` is supported on the current GPU, version 3 is also a good point to inspect block-level metrics because the set of important kernels is smaller than in the baseline.
 
 ## Workshop note
 
-A short companion exercise sequence is given in [`README_WORKSHOP.md`](README_WORKSHOP.md). The performance-debugging exercise under [`exercises/performance_debugging`](exercises/performance_debugging) is also useful when the goal is to understand how the final optimized path was reached.
+Use [`README_WORKSHOP.md`](README_WORKSHOP.md) for the short lab sequence. The staged debugging exercise under [`exercises/performance_debugging`](exercises/performance_debugging) is useful when the goal is to understand how the final optimized path was reached.
 
-## Additional resources
+## References
 
 - comparison across versions: [`../VERSION_COMPARISON.md`](../VERSION_COMPARISON.md)
 - Triton tutorials: https://triton-lang.org/main/getting-started/tutorials/index.html

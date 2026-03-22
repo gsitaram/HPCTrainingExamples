@@ -1,64 +1,63 @@
 # ML Example: TinyTransformer Profiling Progression
 
-In this directory we consider a small transformer training problem that is used to study profiling and performance changes across several implementations. The same model is advanced through a sequence of versions so that the effect of each optimization can be examined with the same workload and the same profiling tools.
+This example keeps the same small decoder-only transformer and changes the implementation one step at a time. The point is not only to make the model faster. It is to see how the profiler output changes when the kernel mix, memory traffic, and framework path change.
 
-The point of the progression is not only to obtain a faster model. It is also to see how the profiler output changes as the computation is restructured. We begin with a plain PyTorch baseline, then introduce operator fusion, custom Triton kernels, and an SDPA-based attention path. Each directory contains a short README with the commands needed to run and profile that version.
+[`version1_pytorch_baseline`](version1_pytorch_baseline) is the main hands-on tutorial. Versions 2 through 4 are comparison points built on the same workload.
 
-## Features of the various versions
+## Version map
 
-- [`version1_pytorch_baseline`](version1_pytorch_baseline): reference PyTorch implementation; this is the right place to start
-- [`version2_pytorch_fused`](version2_pytorch_fused): first round of fusion using framework-level mechanisms
-- [`version3_triton`](version3_triton): custom Triton kernels for selected operations
-- [`version4_pytorch_sdpa`](version4_pytorch_sdpa): SDPA-based attention together with the later fused paths
+- [`version1_pytorch_baseline`](version1_pytorch_baseline): plain PyTorch reference implementation and the main tutorial entry point
+- [`version2_pytorch_fused`](version2_pytorch_fused): framework-level fusion path; useful for checking whether the stack actually enables the intended fused kernels
+- [`version3_triton`](version3_triton): custom Triton kernels for the main transformer building blocks
+- [`version4_pytorch_sdpa`](version4_pytorch_sdpa): SDPA-based attention path with the later fused structure kept in place
 
-## Representative comparison
+## Recommended order
 
-Representative results collected in [`VERSION_COMPARISON.md`](VERSION_COMPARISON.md) on an RX 7900 XTX with ROCm 6.4.4 are summarized below:
+1. Start with [`version1_pytorch_baseline`](version1_pytorch_baseline) and record the baseline speed, batch time, memory use, hotspot list, and trace structure.
+2. Move to [`version2_pytorch_fused`](version2_pytorch_fused) and check whether framework-level fusion changes the kernel mix on your software stack.
+3. Use [`version3_triton`](version3_triton) to study the first large change in dispatch count and memory footprint.
+4. Use [`version4_pytorch_sdpa`](version4_pytorch_sdpa) to compare a framework attention path against the custom Triton path in version 3.
 
-| Version | Samples/sec | Peak Memory | Main change |
-|---------|-------------|-------------|-------------|
-| V1 baseline | 240.6 | 434.3 MB | Plain PyTorch reference |
-| V2 fused | 247.4 | 434.3 MB | First round of fusion |
-| V3 Triton | 1054.8 | 193.8 MB | Custom Triton kernels |
-| V4 SDPA | 1054.5 | 193.9 MB | PyTorch SDPA plus fused path |
+## Example measurements
 
-These numbers will change with hardware, ROCm version, and problem size. The more stable point is the methodology: keep the model fixed, change one implementation layer at a time, and compare the traces, hotspot lists, and memory behavior.
+The table below shows one validated set of runs collected in the ROCm 6.4 training container on March 22, 2026. Treat these as example measurements, not as target numbers for every system.
+
+| Version | Avg training speed | Avg batch time | Peak memory | Main observation |
+|---------|--------------------|----------------|-------------|------------------|
+| V1 baseline | 291.3 samples/sec | 27.5 ms | 434.3 MB | Reference PyTorch path |
+| V2 fused | 259.0 samples/sec | 30.9 ms | 434.3 MB | Fused features were not active on this stack |
+| V3 Triton | 829.9 samples/sec | 9.6 ms | 193.8 MB | Custom kernels changed both speed and memory use |
+| V4 SDPA | 830.7 samples/sec | 9.6 ms | 193.9 MB | SDPA path landed close to V3 on this workload |
+
+The stable point is the methodology: keep the model fixed, change one implementation layer at a time, and compare the traces, hotspot lists, and memory behavior.
+
+The plot below was generated from the validated container runs with `generate_example_plots.py`.
+
+![TinyTransformer example measurements from validated container runs](images/tinytransformer_baseline_comparison.png)
 
 ## Common profiling tools
 
-The version directories use a common set of ROCm profiling scripts:
+All version directories provide the same ROCm profiling workflow:
 
-- `get_trace.sh`: runtime trace with `rocprofv3`
-- `get_counters.sh`: kernel trace with `rocprofv3`
-- `get_rocprof_compute.sh`: hardware counter collection with `rocprof-compute`
-- `get_rocprof_sys.sh`: system trace with `rocprof-sys`
+- `./get_hotspots.sh`: quick kernel ranking from `rocprofv3 --kernel-trace --stats`
+- `./get_trace.sh`: runtime trace and Perfetto output
+- `./get_counters.sh`: full kernel trace output
+- `./get_rocprof_compute.sh`: hardware metrics when `rocprof-compute` is supported on the current GPU
+- `./get_rocprof_sys.sh`: system trace; this script uses a smaller default step count to keep the run practical
 
-Versions 2 through 4 also include `get_hotspots.sh`, which provides a fast first look at the kernels that dominate execution time.
-
-## Running a first case
-
-Load the required modules:
+The scripts also accept shared environment overrides through `profile_common.sh`. For example:
 
 ```bash
-module load pytorch rocm
+TINYTRANSFORMER_BATCH_SIZE=8 \
+TINYTRANSFORMER_SEQ_LEN=128 \
+TINYTRANSFORMER_NUM_STEPS=10 \
+./get_trace.sh
 ```
-
-For versions 3 and 4, load Triton as well:
-
-```bash
-module load triton
-```
-
-We recommend the following order:
-
-1. Run and profile `version1_pytorch_baseline`.
-2. Compare the result to `version2_pytorch_fused` to see what modest fusion changes.
-3. Move to `version3_triton` and `version4_pytorch_sdpa` to examine the larger change in kernel mix and memory use.
 
 ## Additional material
 
-The following files provide the broader context for the example:
-
-- [`VERSION_COMPARISON.md`](VERSION_COMPARISON.md): side-by-side profiling comparison across versions
+- [`version1_pytorch_baseline/README.md`](version1_pytorch_baseline/README.md): primary tutorial for the progression
+- [`generate_example_plots.py`](generate_example_plots.py): regenerates the example plots from validation logs
+- [`VERSION_COMPARISON.md`](VERSION_COMPARISON.md): side-by-side comparison notes across versions
 - [`TINY_LLAMA_ARCHITECTURE.md`](TINY_LLAMA_ARCHITECTURE.md): model structure and implementation notes
 - [`TECHNICAL_APPENDICES.md`](TECHNICAL_APPENDICES.md): supplementary technical discussion

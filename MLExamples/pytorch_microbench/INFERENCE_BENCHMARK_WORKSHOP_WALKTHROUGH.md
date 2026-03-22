@@ -35,6 +35,10 @@ Write down the following quantities:
 
 This baseline gives the reference point for the remaining exercises.
 
+The figure below was generated from fresh container runs with `generate_example_plots.py`. It shows the baseline case together with two follow-up variations used later in this workshop.
+
+![pytorch_microbench example measurements from validated container runs](images/pytorch_microbench_example_runs.png)
+
 ## Exercise 2: Runtime trace
 
 Collect a full runtime trace:
@@ -57,12 +61,12 @@ Inspect the trace with three questions in mind:
 
 If time is limited, this is the first profiler we recommend running because it gives the clearest overall picture of the execution.
 
-## Exercise 3: Kernel summary
+## Exercise 3: GPU hotspots
 
 Collect a kernel trace:
 
 ```bash
-./get_counters.sh
+./get_gpu_hotspots.sh
 ```
 
 If the result is a ROCm 7.x database, extract a summary with:
@@ -81,26 +85,35 @@ From this output, record:
 
 For the CNN workloads in this directory, the dominant kernels are often convolution and batch normalization kernels from MIOpen. The exact names matter less than their share of the total time.
 
-## Exercise 4: Hardware metrics
+The plot below comes from an actual `get_gpu_hotspots.sh` run in the container and gives one compact example of the hotspot distribution.
+
+![pytorch_microbench GPU hotspots from validated container run](images/pytorch_microbench_gpu_hotspots.png)
+
+## Exercise 4: Performance metrics
 
 Collect a `rocprof-compute` report:
 
 ```bash
-./get_rocprof_compute.sh
+./get_performance_metrics.sh
 ```
 
-Then generate a report for one of the dominant dispatches:
+Then list the detected kernels and dispatches:
 
 ```bash
-rocprof-compute analyze \
-    -p profiling_results/rocprof_compute_<timestamp>/workloads/<workload_name>/rocprof \
-    --dispatch <N> \
-    -n resnet50_dispatch
+rocprof-compute analyze -p <profile_dir> --list-stats
 ```
 
-This exercise is most useful after Exercise 3 because it is easier to interpret the report when there is already a target kernel in mind.
+After selecting a dispatch, generate a focused report:
 
-On consumer GPUs such as the RX 7900 XTX used in the container validation, `rocprof-compute` may be unavailable for hardware-counter collection. In that case, treat this exercise as optional and continue with the remaining steps.
+```bash
+rocprof-compute analyze -p <profile_dir> --dispatch <N>
+rocprof-compute analyze -p <profile_dir> --dispatch <N> --block 2.1.15 6.2.7
+rocprof-compute analyze -p <profile_dir> --dispatch <N> --block 16.1 17.1
+```
+
+This exercise is most useful after Exercise 3 because it is easier to interpret the report when there is already a target kernel in mind. The occupancy-oriented block selection and memory-oriented block selection mirror the usage pattern in the `rocprof-compute` training examples elsewhere in this repository.
+
+On systems where `rocprof-compute` hardware-counter collection is unavailable, treat this exercise as optional and continue with the remaining steps.
 
 Questions to answer:
 
@@ -118,15 +131,14 @@ Collect a system trace:
 
 Open the resulting `.proto` file in Perfetto and compare it with the runtime trace from Exercise 2. The goal is not to replace the runtime trace, but to see whether the broader system view changes the interpretation of the run.
 
-If the output becomes too noisy on a given machine, it is reasonable to stop after Exercise 4 and return to `rocprof-sys` only when a system-level question remains unresolved.
+If the system-level view is not needed for the first pass, it is reasonable to stop after Exercise 4 and return to `rocprof-sys` later.
 
 ## Follow-up variations
 
 After the default case has been studied, try one variable at a time:
 
 ```bash
-python micro_benchmarking_pytorch.py --network densenet121 --batch-size 64 --iterations 10
-python micro_benchmarking_pytorch.py --network resnet50 --batch-size 64 --iterations 10 --fp16 1
+python micro_benchmarking_pytorch.py --network densenet121 --batch-size 64 --iterations 10 --fp16 1
 python micro_benchmarking_pytorch.py --network resnet50 --batch-size 64 --iterations 10 --compile
 ```
 

@@ -7,25 +7,25 @@ This file collects a few technical notes that are useful when varying the defaul
 Mixed precision can be enabled with:
 
 ```bash
-python micro_benchmarking_pytorch.py --network densenet121 --batch-size 2048 --fp16 1
+python micro_benchmarking_pytorch.py --network densenet121 --batch-size 64 --iterations 10 --fp16 1
 ```
 
 Compilation can be enabled with:
 
 ```bash
-python micro_benchmarking_pytorch.py --network densenet121 --batch-size 2048 --compile --fp16 1
+python micro_benchmarking_pytorch.py --network resnet50 --batch-size 64 --iterations 10 --compile
 ```
 
-For short runs, the one-time compile cost may dominate the reported timing. In the validated container run, a `10`-iteration compiled `resnet50` case was much slower than the eager baseline for exactly that reason. When the goal is steady-state comparison, use a larger iteration count.
+For short runs, the one-time compile cost may dominate the reported timing, so a compiled case may appear slower than the eager baseline even when the steady-state behavior is better. When the goal is steady-state comparison, use a larger iteration count.
 
 Additional compile options may be passed through `--compileContext`, for example:
 
 ```bash
 python micro_benchmarking_pytorch.py \
-    --network densenet121 \
-    --batch-size 2048 \
+    --network resnet50 \
+    --batch-size 64 \
+    --iterations 20 \
     --compile \
-    --fp16 1 \
     --compileContext "{'mode': 'max-autotune', 'fullgraph': 'True'}"
 ```
 
@@ -35,7 +35,7 @@ On systems that use MIOpen, it can be useful to allow the library to tune and ca
 
 ```bash
 export MIOPEN_FIND_ENFORCE=3
-python micro_benchmarking_pytorch.py --network densenet121 --batch-size 2048 --compile --fp16 1
+python micro_benchmarking_pytorch.py --network resnet50 --batch-size 64 --iterations 10
 ```
 
 The first run may spend additional time building the performance database. Subsequent runs are then more meaningful for comparison.
